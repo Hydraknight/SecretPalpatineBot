@@ -122,8 +122,14 @@ async def begin_game(ctx: commands.Context):
 
     session = game_sessions.get(guild_id)
     session['guild_id'] = guild_id
+    session['init_channel'] = ctx.channel.id
     session['enacted_policies'] = []
     session['election_tracker'] = 0
+    session['discard_pile'] = []
+    session['last_government'] = {
+        'president': None,
+        'chancellor': None
+    }
     if not session or session['state'] != 'waiting':
         embed = discord.Embed(
             title="No Game Ready to Begin",
@@ -153,8 +159,17 @@ async def begin_game(ctx: commands.Context):
     random.shuffle(session['players'])
     session['roles'] = {session['players'][i]: roles[i]
                         for i in range(player_count)}
+    random.shuffle(session['players'])
     #get the list of fascists in session['players']:
-
+    fascists = [await bot.fetch_user(player) for player in session['players'] if session['roles'][player]
+                == 'Fascist']
+    fascists = [fascist.display_name for fascist in fascists]
+    hitler = None
+    for player in session['players']:
+        if session['roles'][player] == 'Hitler':
+            hitler = await bot.fetch_user(player)
+            break
+    
 
     president_id = session['players'][0]  # First player starts as President
     session['president'] = president_id
@@ -174,15 +189,21 @@ async def begin_game(ctx: commands.Context):
             desc = "You are a **Liberal**.\n\n# GOAL\n Your goal is to protect the future of the country by enacting five Liberal Policies or by finding and killing Hitler. Stay vigilant, as the Fascists will try to deceive and manipulate the government for their nefarious purposes. Trust your instincts and your fellow Liberals, but be cautious—anyone could be a hidden Fascist or, worse, Hitler."
         elif role == 'Hitler':
             color = discord.Color.red()
-            desc = "You are **Hitler**.\n\n# GOAL\n Although you are part of the Fascist team, you must act like a Liberal to avoid suspicion. Your identity is known only to the Fascists. Work with them subtly to advance Fascist policies without revealing yourself. Victory is yours if you are elected Chancellor after three Fascist Policies have been enacted. Be careful—if the Liberals discover your identity, they will stop at nothing to assassinate you."
+            desc = f"You are **Hitler**.\n\n# GOAL\n Although you are part of the Fascist team, you must act like a Liberal to avoid suspicion. Your identity is known only to the Fascists. Work with them subtly to advance Fascist policies without revealing yourself. Victory is yours if you are elected Chancellor after three Fascist Policies have been enacted. Be careful—if the Liberals discover your identity, they will stop at nothing to assassinate you."
         else:
             color = discord.Color.orange()
-            desc = "You are a **Fascist**.\n\n# GOAL\n Your mission is to undermine the Liberal government and pave the way for Hitler to rise to power. Work in secret to sow discord and enact six Fascist Policies. Be careful, as you must avoid detection. Your ultimate goal is to ensure Hitler's election as Chancellor after three Fascist Policies have been enacted."
-        await player.send(embed=discord.Embed(
+            desc = f"You are a **Fascist**.\n\n# GOAL\n Your mission is to undermine the Liberal government and pave the way for Hitler to rise to power. Work in secret to sow discord and enact six Fascist Policies. Be careful, as you must avoid detection. Your ultimate goal is to ensure Hitler's election as Chancellor after three Fascist Policies have been enacted.\n## Fascists:\n **{', '.join(fascists)}**\n## Hitler:\n**{hitler.display_name if hitler else 'No Hitler'}**"
+        embed=discord.Embed(
             title=f"Your Role: **{role}**",
             description=desc,
             color=color
-        ))
+        )
+        card = f"GameAssets/{role} Card.png"
+        if os.path.isfile(card):
+            file = discord.File(card, filename="card.png")
+            embed.set_image(url="attachment://card.png")
+            await player.send(embed=embed, file=file)
+
         overwrites[player] = discord.PermissionOverwrite(
             read_messages=True, send_messages=True)
 
@@ -190,11 +211,23 @@ async def begin_game(ctx: commands.Context):
     session['channel_id'] = channel.id
 
     # Ping all players in the channel
-    mentions = ', '.join(
-        [f'<@{player_id}>' for player_id in session['players']])
+    # mentions = ', '.join(
+    #     [f'<@{player_id}>' for player_id in session['players']])
     chl = await bot.fetch_channel(channel.id)
-    await ctx.send(f"Game starting! Head over to {chl.mention}")
-    await channel.send(f"Game has started! Players: {mentions}")
+    #beatiful embed that game is starting at channel:
+    embed = discord.Embed(
+        title="Game Starting",
+        description=f"Game starting! Head over to {chl.mention} to play Secret Hitler!"
+    )
+    img = "GameAssets/Banner.png"
+    if os.path.isfile(img):
+        file = discord.File(img, filename="banner.png")
+        embed.set_image(url="attachment://banner.png")
+        await ctx.send(embed=embed, file=file)
+    order = ''
+    for i, mention in enumerate(session['players']):
+        order+=f"{i+1}. <@{mention}>\n"
+    await channel.send(f"Game has started! Players in order:\n {order}")
 
     # Announce the first President
     president = president_id
@@ -239,9 +272,12 @@ async def start_election_round(ctx, session, channel):
         return
 
     president_id = session['president']
+    invalid = [session['last_government']['chancellor'],
+               session['last_government']['president'], president_id]
+    print(invalid)
     players = []
     for member in guild.members:  # Use the fetched guild object
-        if member.id in session['players']:
+        if member.id in session['players'] and member.id not in invalid:
             players.append(member)
 
     # Announce the start of the election round
@@ -250,7 +286,15 @@ async def start_election_round(ctx, session, channel):
         description=f"<@{president_id}> is now the Presidential Candidate. Please choose a Chancellor in your DM.",
         color=discord.Color.blue()
     )
-    await channel.send(embed=embed)
+    #set president avatar as thumbnail:
+    president = await bot.fetch_user(president_id)
+    embed.set_thumbnail(url=president.avatar)
+    president_image_path = "GameAssets/President.png"
+    if os.path.isfile(president_image_path):
+        file = discord.File(president_image_path, filename="president.png")
+        embed.set_image(url="attachment://president.png")
+        await channel.send(embed=embed, file=file)
+    
 
     # Create and send the dropdown
     select = ChancellorSelect(ctx, players)
@@ -274,6 +318,13 @@ async def start_vote(ctx, channel_id, president, chancellor):
             chancellor.mention} as Chancellor. Please vote!",
         color=discord.Color.green()
     )
+    embed.set_thumbnail(url=chancellor.avatar)
+    chancellor_image_path = "GameAssets/Chancellor.png"
+    if os.path.isfile(chancellor_image_path):
+        file = discord.File(chancellor_image_path, filename="chancellor.png")
+        embed.set_image(url="attachment://chancellor.png")
+        await channel.send(embed=embed,file=file)
+
 
     view = ChancellorVoteView(session, session['players'], ctx)
     await channel.send(embed=embed, view=view)
@@ -283,25 +334,33 @@ class ChancellorVoteView(View):
     def __init__(self, session, players, ctx):
         super().__init__()
         self.players = players
-        self.votes = {}
+        self.votes = {}  # Dictionary to store votes, format: {user_id: vote}
         self.ctx = ctx
         self.session = session
+        self.vote_message = None  # Store the message object for vote updates
+        self.lock = asyncio.Lock()  # Semaphore to ensure single execution
 
     @discord.ui.button(label="Vote Yes", style=discord.ButtonStyle.green)
     async def vote_yes(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.handle_vote(interaction.user.id, True, interaction)
+        async with self.lock:
+            await self.handle_vote(interaction.user.id, True, interaction)
 
     @discord.ui.button(label="Vote No", style=discord.ButtonStyle.red)
     async def vote_no(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.handle_vote(interaction.user.id, False, interaction)
+        async with self.lock:
+            await self.handle_vote(interaction.user.id, False, interaction)
 
     async def handle_vote(self, user_id, vote, interaction):
         if user_id in self.votes:
             await interaction.response.send_message("You have already voted!", ephemeral=True)
             return
 
+        # Record the user's vote
         self.votes[user_id] = vote
         await interaction.response.send_message(f"You voted {'Yes' if vote else 'No'}!", ephemeral=True)
+
+        # Update vote status message
+        await self.update_vote_status(interaction)
 
         if len(self.votes) == len(self.players):
             await self.evaluate_votes()
@@ -309,9 +368,52 @@ class ChancellorVoteView(View):
         # Disable the button after use
         await interaction.message.edit(view=self)
 
+    async def update_vote_status(self, interaction):
+        vote_status = ""
+        for player_id in self.players:
+            player = await bot.fetch_user(player_id)
+            if player_id in self.votes:
+                vote_status += f"{player.display_name}: {
+                    '✅ Voted' if self.votes[player_id] else '✅ Voted'}\n"
+            else:
+                vote_status += f"{player.display_name}: ❓ (Not Voted)\n"
+
+        embed = discord.Embed(
+            title="Current Voting Status",
+            description=vote_status,
+            color=discord.Color.blue()
+        )
+
+        if self.vote_message is None:
+            # Send the initial vote status message and store the message object
+            self.vote_message = await interaction.channel.send(embed=embed)
+        else:
+            # Edit the existing message with the updated vote status
+            await self.vote_message.edit(embed=embed)
+
     async def evaluate_votes(self):
         yes_votes = sum(1 for vote in self.votes.values() if vote)
         no_votes = len(self.votes) - yes_votes
+
+        # Show final voting breakdown
+        final_vote_status = ""
+        for player_id, vote in self.votes.items():
+            player = await bot.fetch_user(player_id)
+            final_vote_status += f"{player.display_name}: {
+                '✅ Yes' if vote else '❌ No'}\n"
+
+        final_message = f"Final Vote Count:\n\n{
+            final_vote_status}\nTotal Yes: {yes_votes}\nTotal No: {no_votes}"
+
+        # Update the vote message with the final results
+        embed = discord.Embed(
+            title="Final Voting Results",
+            description=final_message,
+            color=discord.Color.green() if yes_votes > no_votes else discord.Color.red()
+        )
+        await self.vote_message.edit(embed=embed)
+
+        channel = await bot.fetch_channel(self.session['channel_id'])
 
         if yes_votes > no_votes:
             # Government is elected
@@ -319,12 +421,10 @@ class ChancellorVoteView(View):
             self.session['election_tracker'] = 0
 
             # Notify about the successful election
-            channel = self.session['channel_id']
             president = self.session['president']
             message = f"The government has been elected. Proceeding to the legislative session. <@{
                 president}>, please discard a policy in your DM."
-            chl = await bot.fetch_channel(channel)
-            await chl.send(message)
+            await channel.send(message)
 
             # Proceed to the legislative session
             await legislative_session(self.ctx, self.session, channel)
@@ -336,6 +436,15 @@ class ChancellorVoteView(View):
         self.session['election_tracker'] += 1
         channel = await bot.fetch_channel(self.session['channel_id'])
         await channel.send(f"The election has failed. The Election Tracker is now at {self.session['election_tracker']}.")
+
+        # Show the updated election tracker image
+        lib_count = sum(
+            1 for p in self.session['enacted_policies'] if p == 'Liberal')
+        lib_tracker = f"GameAssets/Liberal Tracker {
+            self.session['election_tracker']}-{lib_count}.png"
+        if os.path.isfile(lib_tracker):
+            file = discord.File(lib_tracker, filename="libtracker.png")
+            await channel.send(file=file)
 
         if self.session['election_tracker'] >= 3:
             # Chaos occurs: enact the top policy
@@ -359,15 +468,15 @@ class ChancellorVoteView(View):
         # Announce the policy that has been enacted
         await channel.send(f"Three elections have failed. The country is in chaos, and the top policy has been enacted: **{top_policy}**.")
 
-        # Check if there is any special action related to this policy (e.g., Executive Power)
+        # Handle executive actions if necessary
         if top_policy == "Fascist":
-            #pick a random executive action:
-            powers = ['investigate_loyalty', 'call_special_election', 'policy_peek', 'execution']
-            #check number of policies employed that are fascist:
-            fasc_count = sum(1 for p in self.session['enacted_policies'] if p == 'Fascist')
-            if fasc_count > 1 and fasc_count < 6:
-                #pick a random power:
-                self.session['executive_action'] = powers[fasc_count-2]
+            # Pick a random executive action based on the number of enacted Fascist policies
+            powers = ['investigate_loyalty',
+                      'call_special_election', 'policy_peek', 'execution']
+            fasc_count = sum(
+                1 for p in self.session['enacted_policies'] if p == 'Fascist')
+            if 1 <= fasc_count < 6:
+                self.session['executive_action'] = powers[fasc_count - 2]
             await handle_executive_action(self.ctx, self.session, channel)
         else:
             await self.start_next_election()
@@ -375,8 +484,6 @@ class ChancellorVoteView(View):
     async def start_next_election(self):
         # Rotate the President and start the next election round
         await start_next_round(self.ctx, self.session, await bot.fetch_channel(self.session['channel_id']))
-
-
 
 async def veto_power(ctx, session, channel):
     president = await bot.fetch_user(session['president'])
@@ -661,7 +768,6 @@ async def legislative_session(ctx, session, channel):
 
     # President draws top 3 policies:
     policies_drawn = [POLICIES.pop() for _ in range(min(3, len(POLICIES)))]
-    print(f"Policies drawn: {policies_drawn}")
     session['policies_drawn'] = policies_drawn
 
     await president.send(f"You have drawn these policies: {', '.join(policies_drawn)}. Please select one to discard.")
@@ -718,10 +824,14 @@ class EnactPolicySelect(Select):
                 color = discord.Color.blue()
             embed = discord.Embed(
                 title="Policy Enacted",
-                description=f"The policy '{enacted_policy}' has been enacted.",
+                description=f"A **{enacted_policy}** Policy has been enacted.",
                 color=color
             )
-            await channel.send(embed=embed)
+            policy_card = f"GameAssets/{enacted_policy} Article.png"
+            if os.path.isfile(policy_card):
+                file = discord.File(policy_card, filename="policy.png")
+                embed.set_image(url="attachment://policy.png")
+                await channel.send(embed=embed, file=file)
             
             # Disable the dropdown after selection
             self.disabled = True
@@ -743,10 +853,22 @@ class EnactPolicySelect(Select):
             1 for p in session['enacted_policies'] if p == 'Fascist')
         lib_count = sum(
             1 for p in session['enacted_policies'] if p == 'Liberal')
+        fasc_tracker = f"GameAssets/Fascist Tracker {fasc_count}.png"
+        lib_tracker = f"GameAssets/Liberal Tracker {
+            session['election_tracker']}-{lib_count}.png"
+        
+        if os.path.isfile(fasc_tracker):
+            file = discord.File(fasc_tracker, filename="fasctracker.png")
+            await channel.send(file=file)
+        if os.path.isfile(lib_tracker):
+            file = discord.File(lib_tracker, filename="libtracker.png")
+            await channel.send(file=file)
+            
         powers = ['investigate_loyalty',
                   'call_special_election', 'policy_peek', 'execution']
           # check number of policies employed that are fascist:
-    
+        session['last_government'] = {
+            'president': session['president'], 'chancellor': session['chancellor']}
         if enacted_policy == 'Fascist' and fasc_count > 1 and fasc_count < 6:
             session['executive_action'] = powers[fasc_count-2]
             await handle_executive_action(self.ctx, session, channel)
@@ -754,6 +876,7 @@ class EnactPolicySelect(Select):
                 if session['roles'][session['chancellor']] == 'Hitler':
                     await channel.send("The Chancellor was Hitler! The Fascists win!")
                     session['state'] = 'game_end'
+                    await end_game(None, "Fascist")
                 else:
                     await channel.send("The Chancellor is not Hitler. The game continues.")
                     session['state'] = 'new_round'
@@ -762,9 +885,12 @@ class EnactPolicySelect(Select):
         elif enacted_policy == 'Liberal' and lib_count >= 5:
             await channel.send("The Liberals have enacted five policies! The Liberals win!")
             session['state'] = 'game_end'
+            await end_game(None, "Liberal")
         else:
+            #store previous chancellor:
             session['state'] = 'new_round'
             save_game_state()
+            await asyncio.sleep(10)
             await start_next_round(self.ctx, session, channel)
 
 
@@ -803,28 +929,55 @@ async def start_next_round(ctx, session, channel):
 
 @bot.hybrid_command(name="end_game", description="End the current Secret Hitler game session")
 @commands.has_permissions(administrator=True)
-async def end_game(ctx: commands.Context):
+async def end_game(ctx: commands.Context, winner:str = None):
     global channel
-    guild_id = ctx.guild.id
-    if guild_id not in game_sessions:
+    if ctx:
+        
+        guild_id = ctx.guild.id
+        if guild_id not in game_sessions:
+            embed = discord.Embed(
+                title="No Game in Progress",
+                description="There is no game in progress to end.",
+                color=discord.Color.red()
+            )
+            await ctx.send(embed=embed)
+            return
+
+        del game_sessions[guild_id]
+        save_game_state()
+
         embed = discord.Embed(
-            title="No Game in Progress",
-            description="There is no game in progress to end.",
+            title="Game Ended",
+            description="The current game session has been terminated.",
             color=discord.Color.red()
         )
+        # delete channel:
         await ctx.send(embed=embed)
-        return
-
-    del game_sessions[guild_id]
-    save_game_state()
-
-    embed = discord.Embed(
+   
+            
+    corresponding_role = ""
+    for player in session['players']:
+        user = await bot.fetch_user(player)
+        corresponding_role += f"{user.display_name}: {session['roles'][player]}\n"
+    if winner == "Fascist":
+        desc = "**Fascists** Win!"
+        color = discord.Color.orange()
+    elif winner == "Liberal":
+        desc = "**Liberals** Win!"
+        color = discord.Color.blue()
+    else:
+        desc = "Game Terminated"
+        color = discord.Color.red()
+    final_embed = discord.Embed(
         title="Game Ended",
-        description="The current game session has been terminated.",
-        color=discord.Color.red()
+        description=desc,
+        color=color
     )
-    # delete channel:
-    await ctx.send(embed=embed)
+    final_embed.add_field(name="Roles", value=corresponding_role)
+    initchannel = session['init_channel']
+    initchannel = await bot.fetch_channel(initchannel)
+    await initchannel.send(embed=final_embed)
+
     await asyncio.sleep(5)
     await channel.delete()
 
