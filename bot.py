@@ -472,8 +472,31 @@ class ChancellorVoteView(View):
                       'call_special_election', 'policy_peek', 'execution']
             fasc_count = sum(
                 1 for p in self.session['enacted_policies'] if p == 'Fascist')
-            if 1 <= fasc_count < 6:
-                self.session['executive_action'] = powers[fasc_count - 2]
+            if len(session['players'] >= 9):
+                if fasc_count == 1:
+                    session['executive_action'] = powers[0]
+                elif fasc_count == 2:
+                    session['executive_action'] = powers[0]
+                elif fasc_count == 3:
+                    session['executive_action'] = powers[1]
+                elif fasc_count >= 4:
+                    session['executive_action'] = powers[3]
+                else:
+                    pass
+            elif len(session['players']) in [7, 8]:
+                if fasc_count == 2:
+                    session['executive_action'] = powers[0]
+                elif fasc_count == 3:
+                    session['executive_action'] = powers[1]
+                elif fasc_count >= 4:
+                    session['executive_action'] = powers[3]
+                else:
+                    pass
+            elif len(session['players']) <= 6:
+                if fasc_count == 3:
+                    session['executive_action'] = powers[2]
+                elif fasc_count >= 4:
+                    session['executive_action'] = powers[3]
             await handle_executive_action(self.ctx, self.session, channel)
         else:
             await self.start_next_election()
@@ -871,8 +894,34 @@ class EnactPolicySelect(Select):
           # check number of policies employed that are fascist:
         session['last_government'] = {
             'president': session['president'], 'chancellor': session['chancellor']}
-        if enacted_policy == 'Fascist' and fasc_count > 1 and fasc_count < 6:
-            session['executive_action'] = powers[fasc_count-2]
+        if enacted_policy == 'Fascist':
+            if len(session['players'] >= 9):
+                if fasc_count == 1:
+                    session['executive_action'] = powers[0]
+                elif fasc_count == 2:
+                    session['executive_action'] = powers[0]
+                elif fasc_count == 3:
+                    session['executive_action'] = powers[1]
+                elif fasc_count >= 4:
+                    session['executive_action'] = powers[3]
+                else:
+                    pass
+            elif len(session['players']) in [7,8]:
+                if fasc_count == 2:
+                    session['executive_action'] = powers[0]
+                elif fasc_count == 3:
+                    session['executive_action'] = powers[1]
+                elif fasc_count >= 4:
+                    session['executive_action'] = powers[3]
+                else:
+                    pass
+            elif len(session['players']) <= 6:
+                if fasc_count == 3:
+                    session['executive_action'] = powers[2]
+                elif fasc_count >= 4:
+                    session['executive_action'] = powers[3]
+                
+
             await handle_executive_action(self.ctx, session, channel)
             if fasc_count >= 3:
                 if session['roles'][session['chancellor']] == 'Hitler':
