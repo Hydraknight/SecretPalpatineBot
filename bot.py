@@ -186,13 +186,13 @@ async def begin_game(ctx: commands.Context):
         role = session['roles'][player_id]
         if role == 'Liberal':
             color = discord.Color.blue()
-            desc = "You are a **Liberal**.\n\n# GOAL\n Your goal is to protect the future of the country by enacting five Liberal Policies or by finding and killing Hitler. Stay vigilant, as the Fascists will try to deceive and manipulate the government for their nefarious purposes. Trust your instincts and your fellow Liberals, but be cautious—anyone could be a hidden Fascist or, worse, Hitler."
+            desc = "You are a **Liberal**.\n# GOAL\n Your goal is to protect the future of the country by enacting five Liberal Policies or by finding and killing Hitler. Stay vigilant, as the Fascists will try to deceive and manipulate the government for their nefarious purposes. Trust your instincts and your fellow Liberals, but be cautious—anyone could be a hidden Fascist or, worse, Hitler."
         elif role == 'Hitler':
             color = discord.Color.red()
-            desc = f"You are **Hitler**.\n\n# GOAL\n Although you are part of the Fascist team, you must act like a Liberal to avoid suspicion. Your identity is known only to the Fascists. Work with them subtly to advance Fascist policies without revealing yourself. Victory is yours if you are elected Chancellor after three Fascist Policies have been enacted. Be careful—if the Liberals discover your identity, they will stop at nothing to assassinate you."
+            desc = f"You are **Hitler**.\n# GOAL\n Although you are part of the Fascist team, you must act like a Liberal to avoid suspicion. Your identity is known only to the Fascists. Work with them subtly to advance Fascist policies without revealing yourself. Victory is yours if you are elected Chancellor after three Fascist Policies have been enacted. Be careful—if the Liberals discover your identity, they will stop at nothing to assassinate you."
         else:
             color = discord.Color.orange()
-            desc = f"You are a **Fascist**.\n\n# GOAL\n Your mission is to undermine the Liberal government and pave the way for Hitler to rise to power. Work in secret to sow discord and enact six Fascist Policies. Be careful, as you must avoid detection. Your ultimate goal is to ensure Hitler's election as Chancellor after three Fascist Policies have been enacted.\n## Fascists:\n **{', '.join(fascists)}**\n## Hitler:\n**{hitler.display_name if hitler else 'No Hitler'}**"
+            desc = f"You are a **Fascist**.\n# GOAL\n Your mission is to undermine the Liberal government and pave the way for Hitler to rise to power. Work in secret to sow discord and enact six Fascist Policies. Be careful, as you must avoid detection. Your ultimate goal is to ensure Hitler's election as Chancellor after three Fascist Policies have been enacted.\n## Fascists:\n **{', '.join(fascists)}**\n## Hitler:\n**{hitler.display_name if hitler else 'No Hitler'}**"
         embed=discord.Embed(
             title=f"Your Role: **{role}**",
             description=desc,
@@ -274,7 +274,7 @@ async def start_election_round(ctx, session, channel):
     president_id = session['president']
     invalid = [session['last_government']['chancellor'],
                session['last_government']['president'], president_id]
-    print(invalid)
+    invalid = []
     players = []
     for member in guild.members:  # Use the fetched guild object
         if member.id in session['players'] and member.id not in invalid:
@@ -323,11 +323,8 @@ async def start_vote(ctx, channel_id, president, chancellor):
     if os.path.isfile(chancellor_image_path):
         file = discord.File(chancellor_image_path, filename="chancellor.png")
         embed.set_image(url="attachment://chancellor.png")
-        await channel.send(embed=embed,file=file)
-
-
-    view = ChancellorVoteView(session, session['players'], ctx)
-    await channel.send(embed=embed, view=view)
+        view = ChancellorVoteView(session, session['players'], ctx)
+        await channel.send(embed=embed, view=view, file=file)
 
 
 class ChancellorVoteView(View):
@@ -537,7 +534,7 @@ class PlayerSelect(discord.ui.Select):
             await president.send(f"The party membership of {player.name} is **{party_membership}**.")
 
             # Notify the channel that the investigation has been completed
-            await self.channel.send(f"{president.mention} has completed an investigation.")
+            await self.channel.send(f"{president.mention} has completed an investigation of {player.mention}.")
 
             await start_next_round(interaction, self.session, self.channel)
 
@@ -691,7 +688,7 @@ class ConfirmVetoView(View):
         await interaction.response.send_message("You have agreed to the veto. The policies are discarded, and the Election Tracker advances.")
 
         # Discard the policies and advance the Election Tracker
-        self.session['discard_pile'].extend(self.session['policies_drawn'])
+        self.session['discard_pile'].extend([self.session['policies_drawn']])
         self.session['election_tracker'] += 1
 
         await self.channel.send(f"The veto has been agreed upon. The Election Tracker is now at {self.session['election_tracker']}.")
@@ -747,10 +744,11 @@ class PolicySelect(Select):
         # Remove the selected policy
         #POLICIES.append(policy)
         try:
-            session['discard_pile'].extend(policy)
+            session['discard_pile'].extend([policy])
         except KeyError:
             session['discard_pile'] = [policy]
         session['policies_drawn'].remove(policy)
+        POLICIES.remove(policy)
         await interaction.response.send_message(f"You have discarded the **{policy}** policy. The remaining policies will be sent to the chancellor.")
         save_game_state()
 
@@ -767,9 +765,12 @@ async def legislative_session(ctx, session, channel):
     chancellor = await bot.fetch_user(session['chancellor'])
 
     # President draws top 3 policies:
-    policies_drawn = [POLICIES.pop() for _ in range(min(3, len(POLICIES)))]
+    if len(POLICIES) < 5:
+        POLICIES.extend(session.get('discard_pile', []))
+        session['discard_pile'] = []
+        random.shuffle(POLICIES)
+    policies_drawn = POLICIES[:3]
     session['policies_drawn'] = policies_drawn
-
     await president.send(f"You have drawn these policies: {', '.join(policies_drawn)}. Please select one to discard.")
 
     # Create and send the dropdown
@@ -816,6 +817,7 @@ class EnactPolicySelect(Select):
 
             # Enact the policy and reset for the next round
             enacted_policy = policy
+            POLICIES.remove(enacted_policy)
             await interaction.response.send_message(
                 f"You have enacted the **{enacted_policy}** policy!  Head over to {channel.mention}")
             if enacted_policy == 'Fascist':
@@ -845,7 +847,7 @@ class EnactPolicySelect(Select):
         policies_remaining = session['policies_drawn']
         if enacted_policy:
             policies_remaining.remove(enacted_policy)
-            POLICIES.extend(policies_remaining)
+
         
 
         # Check for game end conditions
