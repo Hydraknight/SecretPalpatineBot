@@ -39,17 +39,48 @@ def save_game_state():
 
 @bot.event
 async def on_ready():
-    global game_sessions
+    global game_sessions, session, channel
     print(f'We have logged in as {bot.user}')
     await bot.tree.sync()
     game_sessions = load_game_state()
+    #if game sessions is not empty:
+    if game_sessions != {}:
+        session = game_sessions[list(game_sessions.keys())[0]]
+        channel = await bot.fetch_channel(session['channel_id'])
 # Hybrid command to start a new game session
+
+#command to start next round:
+@bot.tree.command(name="next_round", description="Start the next round of the game")
+async def next_round(ctx: commands.Context):
+    guild_id = ctx.guild.id
+    session = game_sessions.get(guild_id)
+    if not session:
+        embed = discord.Embed(
+            title="No Game Session Available",
+            description="There is no game session available to start the next round.",
+            color=discord.Color.red()
+        )
+        await ctx.send(embed=embed)
+        return
+
+    if session['state'] != 'new_round':
+        embed = discord.Embed(
+            title="Invalid Command",
+            description="You can only start the next round when the current round has ended.",
+            color=discord.Color.red()
+        )
+        await ctx.send(embed=embed)
+        return
+
+    await start_election_round(ctx, session, channel)
 
 
 @bot.hybrid_command(name="start_game", description="Start a new Secret Hitler game session")
 async def start_game(ctx: commands.Context):
     global game_sessions
     guild_id = ctx.guild.id
+    #admin check:
+
     if guild_id in game_sessions:
         embed = discord.Embed(
             title="Game Already in Progress",
@@ -75,6 +106,26 @@ async def start_game(ctx: commands.Context):
     await ctx.send(embed=embed)
 
 # Hybrid command for players to join the game
+#command to set the current session state to new_round:
+
+
+@bot.hybrid_command(name="new_round", description="Join the Secret Hitler game")
+async def new_round(ctx: commands.Context):
+    #admin check:
+    if not ctx.author.guild_permissions.administrator:
+        embed = discord.Embed(
+            title="Permission Denied",
+            description="You do not have permission to start the new round.",
+            color=discord.Color.red()
+        )
+        await ctx.send(embed=embed, ephemeral=True)
+        return
+    guild_id = ctx.guild.id
+    session = game_sessions[guild_id]
+    session['state'] = 'new_round'
+    channel = await bot.fetch_channel(session['channel_id'])
+    save_game_state()
+    #await start_election_round(ctx, session, channel)
 
 
 @bot.hybrid_command(name="join_game", description="Join the Secret Hitler game")
@@ -229,6 +280,8 @@ async def begin_game(ctx: commands.Context):
     save_game_state()
     # Role Assignment
     fascists_count = max(1, (player_count // 3))
+    if player_count == 6:
+        fascists_count = 1
     liberals_count = player_count - fascists_count - 1
     roles = ['Liberal'] * liberals_count + \
         ['Fascist'] * fascists_count + ['Hitler']
@@ -331,8 +384,7 @@ class ChancellorSelect(Select):
         selected_chancellor = await bot.fetch_user(self.selected_chancellor_id)
         await interaction.response.send_message(
             f"You have selected {selected_chancellor.mention}. Please click 'Lock In' to confirm.", ephemeral=True)
-
-
+    
 class LockInButton(discord.ui.Button):
     def __init__(self, label="Lock In"):
         super().__init__(label=label, style=discord.ButtonStyle.green)
@@ -341,17 +393,24 @@ class LockInButton(discord.ui.Button):
         view = self.view
         if isinstance(view, ChancellorSelectView):
             await view.lock_in_chancellor_selection(interaction)
+            await interaction.followup.edit_message(message_id=interaction.message.id, content="Your Chancellor choice is **locked in**.")
         if isinstance(view, EnactPolicyView):
             await view.lock_in_policy_enactment(interaction)
+            await interaction.followup.edit_message(message_id=interaction.message.id, content="The policy to be enacted is **locked in**.")
         if isinstance(view, DiscardPolicyView):
             await view.lock_in_policy_discard(interaction)
+            await interaction.followup.edit_message(message_id=interaction.message.id, content="The policy to be discarded is **locked in**.")
         if isinstance(view, InvestigateLoyaltyView):
             await view.lock_in_investigation(interaction)
+            await interaction.followup.edit_message(message_id=interaction.message.id, content="The choice for investigation is **locked in**.")
         elif isinstance(view, SpecialElectionView):
             await view.lock_in_special_election(interaction)
+            await interaction.followup.edit_message(message_id=interaction.message.id, content="The player choice for the new president is **locked in**.")
         elif isinstance(view, ExecutionView):
             await view.lock_in_execution(interaction)
-        await interaction.response.defer()
+            await interaction.followup.edit_message(message_id=interaction.message.id, content="The player to be executed is **locked in**.")
+            
+        
 
 
 class ChancellorSelectView(View):
@@ -368,14 +427,16 @@ class ChancellorSelectView(View):
             await interaction.response.send_message("Please select a Chancellor first.", ephemeral=True)
             return
 
-        global session
+        global session, game_sessions
+        #first item in the game_sessions dictionary:
+        session = game_sessions[list(game_sessions.keys())[0]]
         session['chancellor'] = chancellor_id
         save_game_state()
 
         chancellor = await bot.fetch_user(chancellor_id)
         channel = await bot.fetch_channel(session['channel_id'])
-        await interaction.response.defer()
-        await interaction.followup.send(f"You have chosen a Chancellor. Return to {channel.mention}")
+        # await interaction.response.defer()
+        await interaction.response.send_message(f"You have chosen a Chancellor. Return to {channel.mention}")
         await channel.send(f"{interaction.user.mention} has chosen {chancellor.mention} as the Chancellor. Proceeding to the vote.")
 
         # Disable all items in the view after locking in the selection
@@ -394,12 +455,12 @@ async def resend_chancellor(ctx: discord.Interaction):
     session = game_sessions.get(guild_id)
 
     if session['state'] != 'chancellor_nomination':
-        await ctx.response.send_message("This command can only be used during the Chancellor nomination phase.", ephemeral=True)
+        await ctx.send("This command can only be used during the Chancellor nomination phase.", ephemeral=True)
         return
 
     channel = await bot.fetch_channel(session['channel_id'])
     await start_election_round(ctx, session, channel)
-    await ctx.response.send_message("Chancellor selection message has been resent.", ephemeral=True)
+    await ctx.send("Chancellor selection message has been resent.", ephemeral=True)
 
 
 async def start_election_round(ctx, session, channel):
@@ -411,8 +472,14 @@ async def start_election_round(ctx, session, channel):
         return
 
     president_id = session['president']
-    invalid = [session['last_government']['chancellor'],
-               session['last_government']['president'], president_id]
+    last_gov = session.get('last_government', None)
+    if last_gov:
+        last_chancellor = last_gov.get('chancellor', None)
+        last_president = last_gov.get('president', None)
+    else:
+        last_chancellor = None
+        last_president = None
+    invalid = [last_chancellor,last_president, president_id]
 
     players = []
     for member in guild.members:  # Use the fetched guild object
@@ -457,24 +524,39 @@ async def start_vote(ctx, channel_id, president, chancellor):
     if os.path.isfile(chancellor_image_path):
         file = discord.File(chancellor_image_path, filename="chancellor.png")
         embed.set_image(url="attachment://chancellor.png")
-        view = ChancellorVoteView(session, session['players'], ctx)
+        vote_embed = discord.Embed(
+            title="Vote for the Government",
+            color=discord.Color.blue()
+        )
+        vote_message = await channel.send(embed=vote_embed)
+        view = ChancellorVoteView(vote_message,session, session['players'], ctx)
         await channel.send(embed=embed, view=view, file=file)
+        
 
 
 class ChancellorVoteView(View):
-    def __init__(self, session, players, ctx):
+    def __init__(self,vote_message, session, players, ctx):
         super().__init__()
         self.players = players
         self.votes = {}  # Dictionary to store votes, format: {user_id: vote}
         self.ctx = ctx
         self.session = session
-        self.vote_message = None  # Store the message object for vote updates
+        self.vote_message = vote_message  # Store the message object for vote updates
+        self.vote_evaluated = False  # Flag to prevent duplicate evaluations
+        self.user_cache = {}
+        embed = discord.Embed(
+            title="Vote for the Government",
+            description="Please vote on the proposed government.",
+            color=discord.Color.blue()
+        )
+        asyncio
+        asyncio.create_task(self.auto_evaluate_votes())
 
-    @discord.ui.button(label="Vote Yes", style=discord.ButtonStyle.green)
+    @discord.ui.button(label="Ja!", style=discord.ButtonStyle.green)
     async def vote_yes(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.handle_vote(interaction.user.id, True, interaction)
 
-    @discord.ui.button(label="Vote No", style=discord.ButtonStyle.red)
+    @discord.ui.button(label="Nein", style=discord.ButtonStyle.red)
     async def vote_no(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.handle_vote(interaction.user.id, False, interaction)
 
@@ -490,19 +572,22 @@ class ChancellorVoteView(View):
         # Update vote status message
         await self.update_vote_status(interaction)
 
-        if len(self.votes) == len(self.players):
+        if len(self.votes) == len(self.players) and not self.vote_evaluated:
+            self.vote_evaluated = True  # Set the flag to prevent duplicate evaluation
             await self.evaluate_votes()
 
-        # Disable the button after use
-        await interaction.message.edit(view=self)
 
     async def update_vote_status(self, interaction):
         vote_status = ""
         for player_id in self.players:
-            player = await bot.fetch_user(player_id)
+            # Check if the user is already cached
+            if player_id not in self.user_cache:
+                # Fetch the user and store it in the cache
+                self.user_cache[player_id] = await bot.fetch_user(player_id)
+            player = self.user_cache[player_id]
+
             if player_id in self.votes:
-                vote_status += f"{player.display_name}: {
-                    '✅ Voted' if self.votes[player_id] else '✅ Voted'}\n"
+                vote_status += f"{player.display_name}: ✅ Voted\n"
             else:
                 vote_status += f"{player.display_name}: ❓ (Not Voted)\n"
 
@@ -539,10 +624,10 @@ class ChancellorVoteView(View):
             description=final_message,
             color=discord.Color.green() if yes_votes > no_votes else discord.Color.red()
         )
-        await self.vote_message.edit(embed=embed)
+        
 
         channel = await bot.fetch_channel(self.session['channel_id'])
-
+        await channel.send(embed=embed)
         if yes_votes > no_votes:
             # Government is elected
             self.session['state'] = 'legislative_session'
@@ -550,22 +635,31 @@ class ChancellorVoteView(View):
             fasc_count = sum(
                 1 for p in self.session['enacted_policies'] if p == 'Fascist')
             candidate = self.session.get('chancellor_candidate', "")
-            if session['roles'][candidate] == 'Hitler' and fasc_count >= 3:
+            if self.session['roles'][candidate] == 'Hitler' and fasc_count >= 3:
                 await channel.send("The Chancellor was Hitler! The Fascists win!")
-                session['state'] = 'game_end'
+                self.session['state'] = 'game_end'
                 await terminate_game(None, "Fascist")
-            # Notify about the successful election
-            president = self.session['president']
-            message = f"The government has been elected. Proceeding to the legislative session. <@{
-                president}>, please discard a policy in your DM."
-            await channel.send(message)
+            else:
+                # Notify about the successful election
+                president = self.session['president']
+                message = f"The government has been elected. Proceeding to the legislative session. <@{
+                    president}>, please discard a policy in your DM."
+                await channel.send(message)
 
-            # Proceed to the legislative session
-            await legislative_session(self.ctx, self.session, channel)
+                # Proceed to the legislative session
+                await legislative_session(self.ctx, self.session, channel)
         else:
             # Election fails, advance the election tracker
             await self.handle_failed_election()
 
+    async def auto_evaluate_votes(self):
+        # Wait for 90 seconds
+        await asyncio.sleep(90)
+
+        # Check if the votes have not been evaluated yet
+        if not self.vote_evaluated:
+            self.vote_evaluated = True  # Set the flag to prevent duplicate evaluation
+            await self.evaluate_votes()
     async def handle_failed_election(self):
         self.session['election_tracker'] += 1
         channel = await bot.fetch_channel(self.session['channel_id'])
@@ -609,7 +703,8 @@ class ChancellorVoteView(View):
                       'call_special_election', 'policy_peek', 'execution']
             fasc_count = sum(
                 1 for p in self.session['enacted_policies'] if p == 'Fascist')
-            if len(session['players'] >= 9):
+            
+            if len(session['players']) >= 9:
                 if fasc_count == 1:
                     session['executive_action'] = powers[0]
                 elif fasc_count == 2:
@@ -717,7 +812,23 @@ class InvestigateLoyaltyView(View):
         await interaction.followup.send(f"Locked in. Investigating {player.mention}.")
         # Show the President the Party Membership of the selected player
         party_membership = self.session['roles'][player_id]
-        await president.send(f"The party membership of {player.name} is **{party_membership}**.")
+        if party_membership in ["Hitler", "Fascist"]:
+            party_membership = "Fascist"
+            color = discord.Color.red()
+        else:
+            party_membership = "Liberal"
+            color = discord.Color.blue()
+        membership = f"GameAssets/{party_membership} Membership.png"
+        membership_embed = discord.Embed(
+            title=f"{player.display_name}'s Party Membership",
+            description=f"{player.display_name} belongs to the **{party_membership}** party!",
+            color=color
+        )
+        if os.path.isfile(membership):
+            file = discord.File(membership, filename="membership.png")
+            membership_embed.set_thumbnail(url="attachment://membership.png")
+            await president.send(embed=membership_embed, file=file)
+        # await president.send(f"The party membership of {player.name} is **{party_membership}**.")
         await self.channel.send(f"{president.mention} has completed an investigation of {player.mention}.")
 
         for item in self.children:
@@ -728,8 +839,9 @@ class InvestigateLoyaltyView(View):
 
 
 class SpecialElectionView(View):
-    def __init__(self, players, session, channel):
+    def __init__(self, ctx, players, session, channel):
         super().__init__()
+        self.ctx = ctx
         self.session = session
         self.channel = channel
         self.select = PlayerSelect(
@@ -752,7 +864,9 @@ class SpecialElectionView(View):
         for item in self.children:
             item.disabled = True
         await interaction.message.edit(view=self)
-        await start_next_round(self.ctx, session, channel)
+        session['chancellor'] = None
+        session['chancellor_candidate'] = None
+        await start_election_round(self.ctx, session, channel)
 
 
 class ExecutionView(View):
@@ -794,7 +908,11 @@ class ExecutionView(View):
         self.session['players'].remove(executed_player_id)
 
         if executed_player_id in self.session.get('last_government', {}).values():
-            del self.session['last_government']
+            #set that value as none:
+            if executed_player_id == session["last_government"]["president"]:
+                session["last_government"]["president"] = None
+            else:
+                session["last_government"]["chancellor"] = None
 
         save_game_state()
 
@@ -820,7 +938,7 @@ async def handle_executive_action(ctx, session, channel):
 
     elif session.get('executive_action') == 'call_special_election':
         await channel.send(f"{president.mention}, you have the power to call a special election.")
-        view = SpecialElectionView(players, session, channel)
+        view = SpecialElectionView(ctx, players, session, channel)
         await president.send("Select a player to become the next Presidential Candidate:", view=view)
 
     elif session.get('executive_action') == 'policy_peek':
@@ -1110,7 +1228,11 @@ class EnactPolicyView(View):
 
         # Determine the executive action based on the number of players and policies
         if enacted_policy == 'Fascist':
+
             session['executive_action'] = ""
+            #test
+            # if len(session['players']) <= 4:
+            #     session['executive_action'] = powers[0]
             if len(session['players']) >= 9:
                 if fasc_count == 1:
                     session['executive_action'] = powers[0]
@@ -1134,13 +1256,14 @@ class EnactPolicyView(View):
                     session['executive_action'] = powers[3]
 
             # Handle executive action and wait until it completes
-            await handle_executive_action(self.ctx, session, channel)
+            
             # Check if the game ends because of Hitler being Chancellor
             if fasc_count >= 4 and session['roles'][session['chancellor']] == 'Hitler':
                 await channel.send("The Chancellor was Hitler! The Fascists win!")
                 session['state'] = 'game_end'
                 await terminate_game(None, "Fascist")
                 return
+            await handle_executive_action(self.ctx, session, channel)
 
         # Check for Liberal win
         if enacted_policy == 'Liberal' and lib_count >= 5:
@@ -1206,9 +1329,8 @@ async def end_term(ctx: commands.Context):
 @bot.hybrid_command(name="terminate_game", description="End the current Secret Hitler game session")
 @commands.has_permissions(administrator=True)
 async def terminate_game(ctx: commands.Context, winner: str = None):
-    global channel
+    global channel, session
     if ctx:
-
         guild_id = ctx.guild.id
         if guild_id not in game_sessions:
             embed = discord.Embed(
@@ -1218,8 +1340,8 @@ async def terminate_game(ctx: commands.Context, winner: str = None):
             )
             await ctx.send(embed=embed)
             return
-
-        del game_sessions[guild_id]
+        else:
+            session = game_sessions[guild_id]
         save_game_state()
 
         embed = discord.Embed(
@@ -1229,7 +1351,8 @@ async def terminate_game(ctx: commands.Context, winner: str = None):
         )
         # delete channel:
         await ctx.send(embed=embed)
-
+    if ctx == None and session == None:
+        session = game_sessions[channel.guild.id]
     if winner == 'Fascist':
         winner = ['Fascist', 'Hitler']
     elif winner == 'Liberal':
@@ -1279,9 +1402,37 @@ async def terminate_game(ctx: commands.Context, winner: str = None):
         files.append(file)
         final_embed.set_thumbnail(url="attachment://thumbnail.png")
     await initchannel.send(embed=final_embed, files=files)
+    fascist_tracker = discord.Embed(
+        title="Fascist Card Tracker",
+        color=discord.Color.red()  
+    )
+    liberal_tracker = discord.Embed(
+        title= "Liberal Card Tracker",
+        color=discord.Color.blue()
+    )
+    fasc_count = sum(
+        1 for p in session['enacted_policies'] if p == 'Fascist')
+    lib_count = sum(
+        1 for p in session['enacted_policies'] if p == 'Liberal')   
+    fasc_tracker = f"GameAssets/Fascist Tracker {fasc_count}.png"
+    lib_tracker = f"GameAssets/Liberal Tracker {
+        session['election_tracker']}-{lib_count}.png"
 
+    if os.path.isfile(fasc_tracker):
+        file = discord.File(fasc_tracker, filename="fasctracker.png")
+        fascist_tracker.set_image(url= "attachment://fasctracker.png")
+        await initchannel.send(embed=fascist_tracker, file=file)
+    if os.path.isfile(lib_tracker):
+        file = discord.File(lib_tracker, filename="libtracker.png")
+        liberal_tracker.set_image(url="attachment://libtracker.png")
+        await initchannel.send(embed=liberal_tracker, file=file)
     await asyncio.sleep(5)
+    channel = session['channel_id']
+    channel = await bot.fetch_channel(channel)
     await channel.delete()
+    guild_id = channel.guild.id
+    del game_sessions[guild_id]
+    save_game_state()
 
 # Load the bot with your token
 
