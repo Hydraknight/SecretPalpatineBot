@@ -96,8 +96,7 @@ async def start_game(ctx: commands.Context):
         'roles': {},
         'state': 'waiting',
         'running': False,
-        'queue': [],
-        'policies': POLICIES
+        'queue': []
     }
     save_game_state()
 
@@ -367,6 +366,7 @@ async def begin_game(ctx: commands.Context):
         'president': None,
         'chancellor': None
     }
+    session['policies'] = POLICIES
     if not session or session['state'] != 'waiting':
         embed = discord.Embed(
             title="No Game Ready to Begin",
@@ -412,6 +412,10 @@ async def begin_game(ctx: commands.Context):
     fascists = [await bot.fetch_user(player) for player in session['players'] if session['roles'][player]
                 == 'Fascist']
     fascists = [fascist.display_name for fascist in fascists]
+    other_fascists = ""
+    if len(fascists) == 1:
+        other_fascists = f"\n## Fascists:\n **{', '.join(fascists)}**"
+
     hitler = None
     for player in session['players']:
         if session['roles'][player] == 'Hitler':
@@ -436,7 +440,7 @@ async def begin_game(ctx: commands.Context):
             desc = "You are a **Liberal**.\n# GOAL\n Your goal is to protect the future of the country by enacting five Liberal Policies or by finding and killing Hitler. Stay vigilant, as the Fascists will try to deceive and manipulate the government for their nefarious purposes. Trust your instincts and your fellow Liberals, but be cautious—anyone could be a hidden Fascist or, worse, Hitler."
         elif role == 'Hitler':
             color = discord.Color.red()
-            desc = f"You are **Hitler**.\n# GOAL\n Although you are part of the Fascist team, you must act like a Liberal to avoid suspicion. Your identity is known only to the Fascists. Work with them subtly to advance Fascist policies without revealing yourself. Victory is yours if you are elected Chancellor after three Fascist Policies have been enacted. Be careful—if the Liberals discover your identity, they will stop at nothing to assassinate you."
+            desc = f"You are **Hitler**.\n# GOAL\n Although you are part of the Fascist team, you must act like a Liberal to avoid suspicion. Your identity is known only to the Fascists. Work with them subtly to advance Fascist policies without revealing yourself. Victory is yours if you are elected Chancellor after three Fascist Policies have been enacted. Be careful—if the Liberals discover your identity, they will stop at nothing to assassinate you.{other_fascists}"
         else:
             color = discord.Color.orange()
             desc = f"You are a **Fascist**.\n# GOAL\n Your mission is to undermine the Liberal government and pave the way for Hitler to rise to power. Work in secret to sow discord and enact six Fascist Policies. Be careful, as you must avoid detection. Your ultimate goal is to ensure Hitler's election as Chancellor after three Fascist Policies have been enacted.\n## Fascists:\n **{', '.join(fascists)}**\n## Hitler:\n**{
