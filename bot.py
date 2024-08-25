@@ -7,9 +7,8 @@ from discord.ui import Button, View, Select
 from discord.ext import commands, tasks
 import pickle
 import os
+import json
 
-POLICIES = ['Liberal'] * 6 + ['Fascist'] * 11
-random.shuffle(POLICIES)
 # Set up the bot
 intents = discord.Intents.all()
 intents.message_content = True  # Required to read messages
@@ -36,19 +35,76 @@ def save_game_state():
     with open(GAME_STATE_FILE, 'wb') as f:
         pickle.dump(game_sessions, f)
 
+def load_stats():
+    if os.path.exists('stats.json'):
+        with open('stats.json', 'r') as f:
+            return json.load(f)
+    return {}
 
+def save_stats():
+    with open('stats.json', 'w') as f:
+        json.dump(stats, f)
+
+def initialize_player_stats(player_id):
+    global stats
+    if player_id not in stats:
+        stats[player_id] = {
+            'wins': 0,
+            'losses': 0,
+            'games': 0,
+            'win_as_Fascist': 0,
+            'win_as_Liberal':0,
+            'win_as_Hitler':0,
+            'loss_as_Fascist': 0,
+            'loss_as_Liberal': 0,
+            'loss_as_Hitler': 0
+        }
+    
 @bot.event
 async def on_ready():
-    global game_sessions, session, channel
+    global game_sessions, session, channel, stats
     print(f'We have logged in as {bot.user}')
     await bot.tree.sync()
     game_sessions = load_game_state()
+    stats = load_stats()
     #if game sessions is not empty:
     if game_sessions != {}:
         session = game_sessions[list(game_sessions.keys())[0]]
         if session.get('channel_id', False):
             channel = await bot.fetch_channel(session['channel_id'])
 # Hybrid command to start a new game session
+
+#comand to go to next president:
+@bot.hybrid_command(name="next_president", description="Go to the next president")
+async def next_president(ctx: commands.Context):
+    guild_id = ctx.guild.id
+    session = game_sessions.get(guild_id)
+    #admin check:
+    if not ctx.author.guild_permissions.administrator:
+        embed = discord.Embed(
+            title="Permission Denied",
+            description="You do not have permission to go the next president.",
+            color=discord.Color.red()
+        )
+        await ctx.send(embed=embed, ephemeral=True)
+        return
+    # Get the current president and chancellor
+    president_id = session['president']
+    # Get the list of players
+    players = session['players']
+    # Find the index of the current president
+    president_index = players.index(president_id)
+    # Calculate the index of the next player
+    next_president_index = (president_index + 1) % len(players)
+    # Set the next player as the new president
+    session['president'] = players[next_president_index]
+    save_game_state()
+    # Notify the players
+    new_president = await bot.fetch_user(session['president'])
+    await ctx.send(f"The next President is {new_president.mention}!")
+    # Start the next election round
+    session['state'] = 'new_round'
+    await start_election_round(ctx, session, channel)
 
 #command to start next round:
 @bot.tree.command(name="next_round", description="Start the next round of the game")
@@ -76,6 +132,49 @@ async def next_round(ctx: commands.Context):
     await start_election_round(ctx, session, channel)
 
 
+@bot.hybrid_command(name="player_stats", description="Shows the stats of player")
+async def player_stats(ctx: commands.Context, player: discord.Member = None):
+    if player == None:
+        player = ctx.author
+    
+    player_id = player.id
+    if str(player_id) not in stats:
+        embed = discord.Embed(
+            title="Player Stats",
+            description="No stats available for this player.",
+            color=discord.Color.red()
+        )
+        await ctx.send(embed=embed)
+        return
+    # Create the embed with player's avatar and information
+    embed = discord.Embed(
+        title=f"Player Stats: {player.display_name}",
+        description=f"**Matches:** {stats[str(player_id)]['games']}\n"
+        f"**`Wins:`** {stats[str(player_id)]['wins']}\n"
+        f"**`Losses:`** {stats[str(player_id)]['losses']}\n"
+        f"**`Win Rate:`** {round((stats[str(player_id)]['wins'] /
+                               stats[str(player_id)]['games']) * 100, 2)}%\n"
+        f"## As Fascist\n"
+        f"➠ **`Wins:`** {stats[str(player_id)]['win_as_Fascist']}\n"
+        f"➠ **`Losses:`** {stats[str(player_id)]['loss_as_Fascist']}\n"
+        f"## As Liberal\n"
+        f"➠ **`Wins:`** {stats[str(player_id)]['win_as_Liberal']}\n"
+        f"➠ **`Losses:`** {stats[str(player_id)]['loss_as_Liberal']}\n"
+        f"## As Hitler\n"
+        f"➠ **`Wins:`** {stats[str(player_id)]['win_as_Hitler']}\n"
+        f"➠ **`Losses:`** {stats[str(player_id)]['loss_as_Hitler']}",
+        color=discord.Color.blue()  # Adjust color as needed
+    )
+
+    # Set thumbnail and footer
+    embed.set_thumbnail(url=player.avatar.url)
+    embed.set_footer(text=f"Stats for {
+                     player.display_name}", icon_url=player.avatar.url)
+
+    # Send the embed
+    await ctx.send(embed=embed)
+    
+
 @bot.hybrid_command(name="start_game", description="Start a new Secret Hitler game session")
 async def start_game(ctx: commands.Context):
     global game_sessions
@@ -98,6 +197,7 @@ async def start_game(ctx: commands.Context):
         'running': False,
         'queue': []
     }
+    initialize_player_stats(ctx.author.id)
     save_game_state()
 
     embed = discord.Embed(
@@ -111,7 +211,7 @@ async def start_game(ctx: commands.Context):
 @bot.hybrid_command(name="stop_game", description="Stop the game")
 async def stop_game(ctx: commands.Context):
     # Check if the user is an admin
-    if not ctx.author.guild_permissions.administrator:
+    if not ctx.author.guild_permissions.administrator: 
         embed = discord.Embed(
             title="Permission Denied",
             description="You do not have permission to stop the game.",
@@ -165,6 +265,7 @@ async def new_round(ctx: commands.Context):
 
 @bot.hybrid_command(name="join_game", description="Join the Secret Hitler game")
 async def join_game(ctx: commands.Context):
+    global stats
     guild_id = ctx.guild.id
     session = game_sessions.get(guild_id,None)
     if not session:
@@ -210,6 +311,7 @@ async def join_game(ctx: commands.Context):
         return
 
     session['players'].append(player.id)
+    initialize_player_stats(player.id)
     save_game_state()
 
     embed = discord.Embed(
@@ -299,6 +401,7 @@ async def kick_player(ctx: commands.Context, player: discord.Member):
 async def lobby(ctx: commands.Context):
     if ctx:
          guild_id = ctx.guild.id
+         await ctx.defer()
     else:
         guild_id = list(game_sessions.keys())[0]
         session = game_sessions(guild_id)
@@ -322,8 +425,7 @@ async def lobby(ctx: commands.Context):
         return
     player_list = ""
     for i, player in enumerate(players):
-        player_object = await bot.fetch_user(player)
-        player_list += f"{i+1}. **{player_object.display_name}**" + "\n"
+        player_list += f"{i+1}. **<@{player}>**" + "\n"
 
     embed = discord.Embed(
         title="Current Game Lobby",
@@ -354,7 +456,8 @@ async def begin_game(ctx: commands.Context):
     await ctx.defer()
     guild = ctx.guild
     guild_id = guild.id
-
+    POLICIES = ['Liberal'] * 6 + ['Fascist'] * 11
+    random.shuffle(POLICIES)
     session = game_sessions.get(guild_id)
     session['guild_id'] = guild_id
     session['init_channel'] = ctx.channel.id
@@ -413,7 +516,7 @@ async def begin_game(ctx: commands.Context):
                 == 'Fascist']
     fascists = [fascist.display_name for fascist in fascists]
     other_fascists = ""
-    if len(fascists) == 1:
+    if len(session['players']) <= 6:
         other_fascists = f"\n## Fascists:\n **{', '.join(fascists)}**"
 
     hitler = None
@@ -427,8 +530,9 @@ async def begin_game(ctx: commands.Context):
 
     # Create a new text channel for the game
     overwrites = {
-        guild.default_role: discord.PermissionOverwrite(read_messages=False),
-        guild.me: discord.PermissionOverwrite(read_messages=True)
+        guild.default_role: discord.PermissionOverwrite(read_messages=True, send_messages=False),
+        guild.me: discord.PermissionOverwrite(
+            read_messages=True, send_messages=True)
     }
     # all the participants should be able to view and type in the channel"
     for player_id in session['players']:
@@ -480,8 +584,8 @@ async def begin_game(ctx: commands.Context):
     order = ''
     for i, mention in enumerate(session['players']):
         order += f"{i+1}. <@{mention}>\n"
-    await channel.send(f"Game has started! Players in order:\n {order}")
-
+    message = await channel.send(f"Game has started! Players in order:\n {order}")
+    await message.pin()
     # Announce the first President
     president = president_id
     session['president'] = president
@@ -549,7 +653,7 @@ class ChancellorSelectView(View):
             await interaction.response.send_message("Please select a Chancellor first.", ephemeral=True)
             return
 
-        global session, game_sessions
+        global game_sessions
         #first item in the game_sessions dictionary:
         session = game_sessions[list(game_sessions.keys())[0]]
         session['chancellor'] = chancellor_id
@@ -601,8 +705,11 @@ async def start_election_round(ctx, session, channel):
     else:
         last_chancellor = None
         last_president = None
-    invalid = [last_chancellor,last_president, president_id]
-    invalid = []
+    if len(session['players']) < 5:
+        invalid = [president_id, last_chancellor]
+    else:
+        invalid = [last_chancellor,last_president, president_id]
+    #invalid = []
     players = []
     for member in guild.members:  # Use the fetched guild object
         if member.id in session['players'] and member.id not in invalid:
@@ -843,11 +950,33 @@ class ChancellorVoteView(View):
             file = discord.File(policy_card, filename="policy.png")
             embed.set_image(url="attachment://policy.png")
             await channel.send(embed=embed, file=file)
-        session['state'] = 'new_round'
+        self.session['state'] = 'new_round'
+        president = await bot.fetch_user(self.session['president'])
+        embed = discord.Embed(
+            title="End of Term",
+            description=f"President {
+                president.mention}, your term is ending. Click the button below to proceed.",
+            color=discord.Color.blue()
+        )
+
+        # Add the button to end the term
+        view = EndTermView(session, self.ctx, channel)
+        await channel.send(embed=embed, view=view)
         save_game_state()
 
     async def start_next_election(self):
-        session['state'] = 'new_round'
+        self.session['state'] = 'new_round'
+        president = await bot.fetch_user(self.session['president'])
+        embed = discord.Embed(
+            title="End of Term",
+            description=f"President {
+                president.mention}, your term is ending. Click the button below to proceed.",
+            color=discord.Color.blue()
+        )
+
+        # Add the button to end the term
+        view = EndTermView(session, self.ctx, channel)
+        await channel.send(embed=embed, view=view)
         save_game_state()
 
 
@@ -965,8 +1094,8 @@ class VetoView(View):
 
             session['executive_action'] = ""
             #test
-            if len(session['players']) <= 4:
-                session['executive_action'] = powers[1]
+            # if len(session['players']) <= 4:
+            #     session['executive_action'] = powers[1]
             if len(session['players']) >= 9:
                 if fasc_count == 1:
                     session['executive_action'] = powers[0]
@@ -1000,13 +1129,24 @@ class VetoView(View):
             await handle_executive_action(self.ctx, session, channel)
 
         # Check for Liberal win
-        if enacted_policy == 'Liberal' and lib_count >= 5:
+        elif enacted_policy == 'Liberal' and lib_count >= 5:
             await channel.send("The Liberals have enacted five policies! The Liberals win!")
             session['state'] = 'game_end'
             await terminate_game(None, "Liberal")
             return
         else:
-            session['state'] = 'new_round'
+            self.session['state'] = 'new_round'
+            president = await bot.fetch_user(self.session['president'])
+            embed = discord.Embed(
+                title="End of Term",
+                description=f"President {
+                    president.mention}, your term is ending. Click the button below to proceed.",
+                color=discord.Color.blue()
+            )
+            # Add the button to end the term
+            view = EndTermView(session, self.ctx, channel)
+            await channel.send(embed=embed, view=view)
+
             save_game_state()
 
 
@@ -1029,8 +1169,9 @@ class PlayerSelect(discord.ui.Select):
 
 
 class InvestigateLoyaltyView(View):
-    def __init__(self, players, session, channel):
+    def __init__(self, ctx, players, session, channel):
         super().__init__()
+        self.ctx = ctx
         self.session = session
         self.channel = channel
         self.select = PlayerSelect(
@@ -1072,7 +1213,18 @@ class InvestigateLoyaltyView(View):
         for item in self.children:
             item.disabled = True
         await interaction.message.edit(view=self)
-        session['state'] = 'new_round'
+        self.session['state'] = 'new_round'
+        president = await bot.fetch_user(session['president'])
+        embed = discord.Embed(
+            title="End of Term",
+            description=f"President {
+                president.mention}, your term is ending. Click the button below to proceed.",
+            color=discord.Color.blue()
+        )
+
+        # Add the button to end the term
+        view = EndTermView(session, self.ctx, channel)
+        await channel.send(embed=embed, view=view)
         save_game_state()
 
 
@@ -1109,9 +1261,40 @@ class SpecialElectionView(View):
         await start_election_round(self.ctx, session, channel)
 
 
+class EndTermView(View):
+    def __init__(self, session, ctx, channel):
+        super().__init__(timeout=None)
+        self.session = session
+        self.ctx = ctx
+        self.channel = channel
+
+    @discord.ui.button(label="End Term", style=discord.ButtonStyle.red)
+    async def end_term(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.session['president']:
+            await interaction.response.send_message("Only the current President can end their term.", ephemeral=True)
+            return
+
+        await interaction.response.send_message("The President's term has ended. Proceeding to the next round.")
+
+        # Disable the button after the term is ended
+        for item in self.children:
+            item.disabled = True
+        await interaction.message.edit(view=self)
+
+        # Proceed to the next round
+        await self.start_next()
+
+    async def start_next(self):
+        # Logic to start the next round
+        self.session['state'] = 'new_round'
+        await start_next_round(self.ctx, self.session, self.channel)
+
+
+
 class ExecutionView(View):
-    def __init__(self, players, session, channel):
+    def __init__(self,ctx, players, session, channel):
         super().__init__()
+        self.ctx = ctx
         self.session = session
         self.channel = channel
         self.select = PlayerSelect(
@@ -1185,6 +1368,17 @@ class ExecutionView(View):
             item.disabled = True
         await interaction.message.edit(view=self)
         session['state'] = 'new_round'
+        president = await bot.fetch_user(session['president'])
+        embed = discord.Embed(
+            title="End of Term",
+            description=f"President {
+                president.mention}, your term is ending. Click the button below to proceed.",
+            color=discord.Color.blue()
+        )
+
+        # Add the button to end the term
+        view = EndTermView(session, self.ctx, channel)
+        await channel.send(embed=embed, view=view)
         save_game_state()
 
 
@@ -1198,7 +1392,7 @@ async def handle_executive_action(ctx, session, channel):
 
     if session.get('executive_action') == 'investigate_loyalty':
         await channel.send(f"{president.mention}, you have the power to investigate the loyalty of one player.")
-        view = InvestigateLoyaltyView(players, session, channel)
+        view = InvestigateLoyaltyView(ctx, players, session, channel)
         await president.send("Select a player to investigate their loyalty:", view=view)
 
     elif session.get('executive_action') == 'call_special_election':
@@ -1212,15 +1406,36 @@ async def handle_executive_action(ctx, session, channel):
         await president.send(f"The top three policies in the deck are: {', '.join(top_policies)}.")
         await channel.send(f"{president.mention} has peeked at the top three policies.")
         session['state'] = 'new_round'
+        president = await bot.fetch_user(session['president'])
+        embed = discord.Embed(
+            title="End of Term",
+            description=f"President {
+                president.mention}, your term is ending. Click the button below to proceed.",
+            color=discord.Color.blue()
+        )
+        # Add the button to end the term
+        view = EndTermView(session, ctx, channel)
+        await channel.send(embed=embed, view=view)
         save_game_state()
     elif session.get('executive_action') == 'execution':
         await channel.send(f"{president.mention}, you have the power to execute one player.")
-        view = ExecutionView(players, session, channel)
+        view = ExecutionView(ctx, players, session, channel)
         await president.send("Select a player to execute:", view=view)
 
     else:
         await channel.send(f"No executive action to perform. Proceeding to the next round.")
         session['state'] = 'new_round'
+        president = await bot.fetch_user(session['president'])
+        embed = discord.Embed(
+            title="End of Term",
+            description=f"President {
+                president.mention}, your term is ending. Click the button below to proceed.",
+            color=discord.Color.blue()
+        )
+
+        # Add the button to end the term
+        view = EndTermView(session, ctx, channel)
+        await channel.send(embed=embed, view=view)
 
 
 async def handle_failed_election(ctx, session, channel):
@@ -1231,6 +1446,16 @@ async def handle_failed_election(ctx, session, channel):
         await enact_top_policy_due_to_chaos(ctx, session, channel)
     else:
         session['state'] = 'new_round'
+        president = await bot.fetch_user(session['president'])
+        embed = discord.Embed(
+            title="End of Term",
+            description=f"President {
+                president.mention}, your term is ending. Click the button below to proceed.",
+            color=discord.Color.blue()
+        )
+        # Add the button to end the term
+        view = EndTermView(session, ctx, channel)
+        await channel.send(embed=embed, view=view)
 
     save_game_state()
 
@@ -1264,6 +1489,16 @@ async def enact_top_policy_due_to_chaos(ctx, session, channel):
         embed.set_image(url="attachment://policy.png")
         await channel.send(embed=embed, file=file)
     session['state'] = 'new_round'
+    president = await bot.fetch_user(session['president'])
+    embed = discord.Embed(
+        title="End of Term",
+        description=f"President {
+            president.mention}, your term is ending. Click the button below to proceed.",
+        color=discord.Color.blue()
+    )
+    # Add the button to end the term
+    view = EndTermView(session, ctx, channel)
+    await channel.send(embed=embed, view=view)
     save_game_state()
 
 
@@ -1284,8 +1519,8 @@ class ConfirmVetoView(View):
 
         await interaction.response.send_message("You have agreed to the veto. The policies are discarded, and the Election Tracker advances.")
 
-        # Discard the policies and advance the Election Tracker
-        self.session['discard_pile'].extend([self.session['policies_drawn']])
+        # Discard the policies drawn and advance the Election Tracker
+        self.session['discard_pile'].extend(self.session.get('policies_drawn',[]))
         for p in self.session['policies_drawn']:
             self.session.get('policies',[]).remove(p)
         self.session['policies_drawn'] = [] 
@@ -1300,6 +1535,17 @@ class ConfirmVetoView(View):
             await enact_top_policy_due_to_chaos(interaction, self.session, self.channel)
         else:
             session['state'] = 'new_round'
+            president = await bot.fetch_user(self.session['president'])
+            embed = discord.Embed(
+                title="End of Term",
+                description=f"President {
+                    president.mention}, your term is ending. Click the button below to proceed.",
+                color=discord.Color.blue()
+            )
+            # Add the button to end the term
+            view = EndTermView(session, self.ctx, channel)
+            await channel.send(embed=embed, view=view)
+            
 
         save_game_state()
 
@@ -1378,9 +1624,9 @@ class ConfirmVetoView(View):
         if enacted_policy == 'Fascist':
 
             session['executive_action'] = ""
-            #test
-            if len(session['players']) <= 4:
-                session['executive_action'] = powers[1]
+            # #test
+            # if len(session['players']) <= 4:
+            #     session['executive_action'] = powers[1]
             if len(session['players']) >= 9:
                 if fasc_count == 1:
                     session['executive_action'] = powers[0]
@@ -1420,7 +1666,18 @@ class ConfirmVetoView(View):
             await terminate_game(None, "Liberal")
             return
         else:
-            session['state'] = 'new_round'
+            self.session['state'] = 'new_round'
+            president = await bot.fetch_user(session['president'])
+            embed = discord.Embed(
+                title="End of Term",
+                description=f"President {
+                    president.mention}, your term is ending. Click the button below to proceed.",
+                color=discord.Color.blue()
+            )
+
+            # Add the button to end the term
+            view = EndTermView(session, self.ctx, channel)
+            await channel.send(embed=embed, view=view)
             save_game_state()
 
 
@@ -1496,8 +1753,8 @@ async def legislative_session(ctx, session, channel):
         print("Shuffling...")
     policies_drawn = session.get('policies',[])[:3]
     session['policies_drawn'] = policies_drawn
-    await president.send(f"You have drawn these policies: {', '.join(policies_drawn)}. Please select one to discard.")
-
+    policies_drawn_str = ', '.join(str(policy) for policy in policies_drawn)
+    await president.send(f"You have drawn these policies: {policies_drawn_str}. Please select one to discard.")
     # Create and send the dropdown
     view = DiscardPolicyView(policies_drawn)
 
@@ -1622,7 +1879,10 @@ class EnactPolicyView(View):
             session['executive_action'] = ""
             #test
             if len(session['players']) <= 4:
-                session['executive_action'] = powers[3]
+                if fasc_count == 1:
+                    session['executive_action'] = powers[0]
+                elif fasc_count == 2:
+                    session['executive_action'] = powers[1]
             if len(session['players']) >= 9:
                 if fasc_count == 1:
                     session['executive_action'] = powers[0]
@@ -1656,13 +1916,24 @@ class EnactPolicyView(View):
             await handle_executive_action(self.ctx, session, channel)
 
         # Check for Liberal win
-        if enacted_policy == 'Liberal' and lib_count >= 5:
+        elif enacted_policy == 'Liberal' and lib_count >= 5:
             await channel.send("The Liberals have enacted five policies! The Liberals win!")
             session['state'] = 'game_end'
             await terminate_game(None, "Liberal")
             return
         else:
             session['state'] = 'new_round'
+            president = await bot.fetch_user(session['president'])
+            embed = discord.Embed(
+                title="End of Term",
+                description=f"President {
+                    president.mention}, your term is ending. Click the button below to proceed.",
+                color=discord.Color.blue()
+            )
+
+            # Add the button to end the term
+            view = EndTermView(session, self.ctx, channel)
+            await channel.send(embed=embed, view=view)
             save_game_state()
 
 
@@ -1722,7 +1993,7 @@ async def end_term(ctx: commands.Context):
 @bot.hybrid_command(name="terminate_game", description="End the current Secret Hitler game session")
 @commands.has_permissions(administrator=True)
 async def terminate_game(ctx: commands.Context, winner: str = None):
-    global channel, session
+    global channel, session, stats
     if ctx:
         guild_id = ctx.guild.id
         if guild_id not in game_sessions:
@@ -1754,13 +2025,28 @@ async def terminate_game(ctx: commands.Context, winner: str = None):
         winner = []
     corresponding_role = ""
     for player in session['players']:
-        user = await bot.fetch_user(player)
-        corresponding_role += f"**{user.display_name}: {session['roles'][player]}** - {
+        if session['roles'][player] in winner:
+            stats[player]['wins'] += 1
+            stats[player][f'win_as_{session['roles'][player]}'] += 1
+            stats[player]['games'] += 1
+        else:
+            stats[player]['losses'] += 1
+            stats[player][f'loss_as_{session['roles'][player]}'] += 1
+            stats[player]['games'] += 1
+        # user = await bot.fetch_user(player)
+        corresponding_role += f"**<@{player}>: {session['roles'][player]}** - {
             "Won" if session['roles'][player] in winner else "Lost"}\n"
     dead = session.get('executed_players', [])
     for player in dead:
-        user = await bot.fetch_user(player)
-        corresponding_role += f'''**{user.display_name}: {
+        if session['roles'][player] in winner:
+            stats[player]['wins'] += 1
+            stats[player][f'win_as_{session['roles'][player]}'] += 1
+            stats[player]['games'] += 1
+        else:
+            stats[player]['losses'] += 1
+            stats[player][f'loss_as_{session['roles'][player]}'] += 1
+            stats[player]['games'] += 1
+        corresponding_role += f'''**<@{player}>: {
             session['roles'][player]}** :skull_crossbones: - {"Won" if session['roles'][player] in winner else "Lost"}\n'''
     if "Fascist" in winner:
         desc = "**Fascists** Win!"
@@ -1839,6 +2125,7 @@ async def terminate_game(ctx: commands.Context, winner: str = None):
         'queue': [],
         'initchannel': initchannel.id
     }
+    save_stats()
     # Notify that the lobby is ready for a new game
     embed = discord.Embed(
         title="Game Ended",
