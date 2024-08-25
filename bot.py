@@ -42,10 +42,11 @@ def load_stats():
     return {}
 
 def save_stats():
+    global stats
     with open('stats.json', 'w') as f:
-        json.dump(stats, f)
+        json.dump(stats, f, indent=4)
 
-def initialize_player_stats(player_id):
+async def initialize_player_stats(player_id):
     global stats
     if player_id not in stats:
         stats[player_id] = {
@@ -139,37 +140,27 @@ async def player_stats(ctx: commands.Context, player: discord.Member = None):
     
     player_id = player.id
     if str(player_id) not in stats:
-        embed = discord.Embed(
-            title="Player Stats",
-            description="No stats available for this player.",
-            color=discord.Color.red()
-        )
-        await ctx.send(embed=embed)
-        return
+        await initialize_player_stats(str(player_id))
+        save_stats()
+    player_id = str(player_id)
     # Create the embed with player's avatar and information
     embed = discord.Embed(
         title=f"Player Stats: {player.display_name}",
-        description=f"**Matches:** {stats[str(player_id)]['games']}\n"
-        f"**`Wins:`** {stats[str(player_id)]['wins']}\n"
-        f"**`Losses:`** {stats[str(player_id)]['losses']}\n"
-        f"**`Win Rate:`** {round((stats[str(player_id)]['wins'] /
-                               stats[str(player_id)]['games']) * 100, 2)}%\n"
-        f"## As Fascist\n"
-        f"➠ **`Wins:`** {stats[str(player_id)]['win_as_Fascist']}\n"
-        f"➠ **`Losses:`** {stats[str(player_id)]['loss_as_Fascist']}\n"
-        f"## As Liberal\n"
-        f"➠ **`Wins:`** {stats[str(player_id)]['win_as_Liberal']}\n"
-        f"➠ **`Losses:`** {stats[str(player_id)]['loss_as_Liberal']}\n"
-        f"## As Hitler\n"
-        f"➠ **`Wins:`** {stats[str(player_id)]['win_as_Hitler']}\n"
-        f"➠ **`Losses:`** {stats[str(player_id)]['loss_as_Hitler']}",
+        description="",
         color=discord.Color.blue()  # Adjust color as needed
     )
-
+    embed.add_field(name="🏅 **Overall Stats**", value=f"**`Matches:`** {stats[player_id]['games']}\n**`Wins:`** {stats[player_id]['wins']}\n**`Losses:`** {
+                    stats[player_id]['losses']}\n**`Win Rate:`** {round(((stats[player_id]['wins'] / 1) if stats[player_id]['games'] == 0 else stats[player_id]['wins']/stats[player_id]['games']) * 100, 2)}%\n", inline=False)
+    embed.add_field(name="🟥 **As Fascist**", value=f"➠ **`Wins:`** {
+                    stats[player_id]['win_as_Fascist']}\n➠ **`Losses:`** {stats[player_id]['loss_as_Fascist']}\n", inline=False)
+    embed.add_field(name="🟦 **As Liberal**", value=f"➠ **`Wins:`** {
+                    stats[player_id]['win_as_Liberal']}\n➠ **`Losses:`** {stats[player_id]['loss_as_Liberal']}\n", inline=False)
+    embed.add_field(name="🔴 **As Hitler**", value=f"➠ **`Wins:`** {
+                    stats[player_id]['win_as_Hitler']}\n➠ **`Losses:`** {stats[player_id]['loss_as_Hitler']}", inline=False)
     # Set thumbnail and footer
-    embed.set_thumbnail(url=player.avatar.url)
+    embed.set_thumbnail(url=player.avatar)
     embed.set_footer(text=f"Stats for {
-                     player.display_name}", icon_url=player.avatar.url)
+                     player.display_name}", icon_url=player.avatar)
 
     # Send the embed
     await ctx.send(embed=embed)
@@ -197,7 +188,7 @@ async def start_game(ctx: commands.Context):
         'running': False,
         'queue': []
     }
-    initialize_player_stats(ctx.author.id)
+    await initialize_player_stats(str(ctx.author.id))
     save_game_state()
 
     embed = discord.Embed(
@@ -311,7 +302,7 @@ async def join_game(ctx: commands.Context):
         return
 
     session['players'].append(player.id)
-    initialize_player_stats(player.id)
+    await initialize_player_stats(str(player.id))
     save_game_state()
 
     embed = discord.Embed(
@@ -951,6 +942,21 @@ class ChancellorVoteView(View):
             embed.set_image(url="attachment://policy.png")
             await channel.send(embed=embed, file=file)
         self.session['state'] = 'new_round'
+
+        fasc_count = sum(1 for p in self.session['enacted_policies'] if p == 'Fascist')
+        lib_count = sum(
+            1 for p in self.session['enacted_policies'] if p == 'Liberal')
+        if fasc_count >= 6:
+            await channel.send("The Fascists have enacted 6 policies. Fascists Win!")
+            self.session['state'] = 'game_end'
+            await terminate_game(None,'Fascist')
+        elif lib_count >= 5:
+            await channel.send("The Liberals have enacted five policies! The Liberals win!")
+            session['state'] = 'game_end'
+            await terminate_game(None, "Liberal")
+            return
+
+                               
         president = await bot.fetch_user(self.session['president'])
         embed = discord.Embed(
             title="End of Term",
@@ -1657,6 +1663,11 @@ class ConfirmVetoView(View):
                 session['state'] = 'game_end'
                 await terminate_game(None, "Fascist")
                 return
+            if fasc_count >= 6:
+                await channel.send("The Fascists have enacted 6 policies. Fascists win!")
+                session['state'] = 'game_end'
+                await terminate_game(None, 'Fascist')
+                return
             await handle_executive_action(self.ctx, session, channel)
 
         # Check for Liberal win
@@ -1878,11 +1889,11 @@ class EnactPolicyView(View):
 
             session['executive_action'] = ""
             #test
-            if len(session['players']) <= 4:
-                if fasc_count == 1:
-                    session['executive_action'] = powers[0]
-                elif fasc_count == 2:
-                    session['executive_action'] = powers[1]
+            # if len(session['players']) <= 4:
+            #     if fasc_count == 1:
+            #         session['executive_action'] = powers[0]
+            #     elif fasc_count == 2:
+            #         session['executive_action'] = powers[1]
             if len(session['players']) >= 9:
                 if fasc_count == 1:
                     session['executive_action'] = powers[0]
@@ -1912,6 +1923,11 @@ class EnactPolicyView(View):
                 await channel.send("The Chancellor was Hitler! The Fascists win!")
                 session['state'] = 'game_end'
                 await terminate_game(None, "Fascist")
+                return
+            if fasc_count >= 6:
+                await channel.send("The Fascists have enacted 6 policies. Fascists win!")
+                session['state'] = 'game_end'
+                await terminate_game(None, 'Fascist')
                 return
             await handle_executive_action(self.ctx, session, channel)
 
@@ -2025,27 +2041,31 @@ async def terminate_game(ctx: commands.Context, winner: str = None):
         winner = []
     corresponding_role = ""
     for player in session['players']:
+        if str(player) not in stats:
+            await initialize_player_stats(str(player))
         if session['roles'][player] in winner:
-            stats[player]['wins'] += 1
-            stats[player][f'win_as_{session['roles'][player]}'] += 1
-            stats[player]['games'] += 1
+            stats[str(player)]['wins'] += 1
+            stats[str(player)][f'win_as_{session['roles'][player]}'] += 1
+            stats[str(player)]['games'] += 1
         else:
-            stats[player]['losses'] += 1
-            stats[player][f'loss_as_{session['roles'][player]}'] += 1
-            stats[player]['games'] += 1
+            stats[str(player)]['losses'] += 1
+            stats[str(player)][f'loss_as_{session['roles'][player]}'] += 1
+            stats[str(player)]['games'] += 1
         # user = await bot.fetch_user(player)
         corresponding_role += f"**<@{player}>: {session['roles'][player]}** - {
             "Won" if session['roles'][player] in winner else "Lost"}\n"
     dead = session.get('executed_players', [])
     for player in dead:
+        if not stats[str(player)]:
+            await initialize_player_stats(str(player))
         if session['roles'][player] in winner:
-            stats[player]['wins'] += 1
-            stats[player][f'win_as_{session['roles'][player]}'] += 1
-            stats[player]['games'] += 1
+            stats[str(player)]['wins'] += 1
+            stats[str(player)][f'win_as_{session['roles'][player]}'] += 1
+            stats[str(player)]['games'] += 1
         else:
-            stats[player]['losses'] += 1
-            stats[player][f'loss_as_{session['roles'][player]}'] += 1
-            stats[player]['games'] += 1
+            stats[str(player)]['losses'] += 1
+            stats[str(player)][f'loss_as_{session['roles'][player]}'] += 1
+            stats[str(player)]['games'] += 1
         corresponding_role += f'''**<@{player}>: {
             session['roles'][player]}** :skull_crossbones: - {"Won" if session['roles'][player] in winner else "Lost"}\n'''
     if "Fascist" in winner:
@@ -2125,7 +2145,8 @@ async def terminate_game(ctx: commands.Context, winner: str = None):
         'queue': [],
         'initchannel': initchannel.id
     }
-    save_stats()
+    with open('stats.json', 'w') as f:
+        json.dump(stats, f, indent=4)
     # Notify that the lobby is ready for a new game
     embed = discord.Embed(
         title="Game Ended",
