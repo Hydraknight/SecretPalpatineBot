@@ -752,11 +752,42 @@ async def start_vote(ctx, channel_id, president, chancellor):
         view = ChancellorVoteView(vote_message,session, session['players'], ctx)
         await channel.send(embed=embed, view=view, file=file)
         
-
-
+async def check_win(ctx,session,channel, executed_player=None):
+    fasc_count = sum(
+        1 for p in session['enacted_policies'] if p == 'Fascist')
+    lib_count = sum(1 for p in session['enacted_policies'] if p == 'Liberal')
+    state = session['state']
+    if state == 'legislative_session':
+        candidate = session.get('chancellor_candidate', "")
+        if session['roles'][candidate] == 'Hitler' and fasc_count >= 3:
+            await channel.send("The Chancellor was Hitler! The Fascists win!")
+            session['state'] = 'game_end'
+            await terminate_game(None, "Fascist")
+            return 0
+    elif executed_player:
+        if session['roles'][executed_player] == 'Hitler':
+            await channel.send("The executed player was Hitler! The Liberals win!")
+            session['state'] = 'game_end'
+            await terminate_game(None, "Liberal")
+            return 0
+    else:
+        if fasc_count >= 6:
+            await channel.send("The Fascists have enacted 6 policies. Fascists Win!")
+            session['state'] = 'game_end'
+            await terminate_game(None, 'Fascist')
+            return 0
+        elif lib_count >= 5:
+            await channel.send("The Liberals have enacted five policies! The Liberals win!")
+            session['state'] = 'game_end'
+            await terminate_game(None, "Liberal")
+            return 0
+        
+    save_game_state()
+    return 1    
 class ChancellorVoteView(View):
     def __init__(self,vote_message, session, players, ctx):
         super().__init__()
+        
         self.players = players
         self.votes = {}  # Dictionary to store votes, format: {user_id: vote}
         self.ctx = ctx
@@ -855,16 +886,9 @@ class ChancellorVoteView(View):
             # Government is elected
             self.session['state'] = 'legislative_session'
             self.session['election_tracker'] = 0
-            fasc_count = sum(
-                1 for p in self.session['enacted_policies'] if p == 'Fascist')
-            candidate = self.session.get('chancellor_candidate', "")
-            if self.session['roles'][candidate] == 'Hitler' and fasc_count >= 3:
-                await channel.send("The Chancellor was Hitler! The Fascists win!")
-                self.session['state'] = 'game_end'
-                await terminate_game(None, "Fascist")
-            else:
-                # Notify about the successful election
+            if await check_win(self.ctx, self.session, self.channel):
                 president = self.session['president']
+                candidate = session.get('chancellor_candidate', "")
                 message = f"# The new chancellor is <@{candidate}>!!\n\n## Proceeding to the legislative session.\n\n-# <@{
                     president}>, please discard a policy in your DM."
                 embed = discord.Embed(
@@ -942,19 +966,7 @@ class ChancellorVoteView(View):
             embed.set_image(url="attachment://policy.png")
             await channel.send(embed=embed, file=file)
         self.session['state'] = 'new_round'
-
-        fasc_count = sum(1 for p in self.session['enacted_policies'] if p == 'Fascist')
-        lib_count = sum(
-            1 for p in self.session['enacted_policies'] if p == 'Liberal')
-        if fasc_count >= 6:
-            await channel.send("The Fascists have enacted 6 policies. Fascists Win!")
-            self.session['state'] = 'game_end'
-            await terminate_game(None,'Fascist')
-        elif lib_count >= 5:
-            await channel.send("The Liberals have enacted five policies! The Liberals win!")
-            session['state'] = 'game_end'
-            await terminate_game(None, "Liberal")
-            return
+        await check_win(self.ctx, self.session, self.channel)
 
                                
         president = await bot.fetch_user(self.session['president'])
@@ -1096,64 +1108,45 @@ class VetoView(View):
             'president': session['president'], 'chancellor': session['chancellor']}
 
         # Determine the executive action based on the number of players and policies
-        if enacted_policy == 'Fascist':
+        if await check_win(self.ctx, self.session, self.channel):
+            if enacted_policy == 'Fascist':
+                session['executive_action'] = ""
+                if len(session['players']) >= 9:
+                    if fasc_count == 1:
+                        session['executive_action'] = powers[0]
+                    elif fasc_count == 2:
+                        session['executive_action'] = powers[0]
+                    elif fasc_count == 3:
+                        session['executive_action'] = powers[1]
+                    elif fasc_count >= 4:
+                        session['executive_action'] = powers[3]
+                elif len(session['players']) in [7, 8]:
+                    if fasc_count == 2:
+                        session['executive_action'] = powers[0]
+                    elif fasc_count == 3:
+                        session['executive_action'] = powers[1]
+                    elif fasc_count >= 4:
+                        session['executive_action'] = powers[3]
+                elif len(session['players']) <= 6:
+                    if fasc_count == 3:
+                        session['executive_action'] = powers[2]
+                    elif fasc_count >= 4:
+                        session['executive_action'] = powers[3]
+                await handle_executive_action(self.ctx, session, channel)
+            else:
+                self.session['state'] = 'new_round'
+                president = await bot.fetch_user(self.session['president'])
+                embed = discord.Embed(
+                    title="End of Term",
+                    description=f"President {
+                        president.mention}, your term is ending. Click the button below to proceed.",
+                    color=discord.Color.blue()
+                )
+                # Add the button to end the term
+                view = EndTermView(session, self.ctx, channel)
+                await channel.send(embed=embed, view=view)
 
-            session['executive_action'] = ""
-            #test
-            # if len(session['players']) <= 4:
-            #     session['executive_action'] = powers[1]
-            if len(session['players']) >= 9:
-                if fasc_count == 1:
-                    session['executive_action'] = powers[0]
-                elif fasc_count == 2:
-                    session['executive_action'] = powers[0]
-                elif fasc_count == 3:
-                    session['executive_action'] = powers[1]
-                elif fasc_count >= 4:
-                    session['executive_action'] = powers[3]
-            elif len(session['players']) in [7, 8]:
-                if fasc_count == 2:
-                    session['executive_action'] = powers[0]
-                elif fasc_count == 3:
-                    session['executive_action'] = powers[1]
-                elif fasc_count >= 4:
-                    session['executive_action'] = powers[3]
-            elif len(session['players']) <= 6:
-                if fasc_count == 3:
-                    session['executive_action'] = powers[2]
-                elif fasc_count >= 4:
-                    session['executive_action'] = powers[3]
-
-            # Handle executive action and wait until it completes
-            
-            # Check if the game ends because of Hitler being Chancellor
-            if fasc_count >= 4 and session['roles'][session['chancellor']] == 'Hitler':
-                await channel.send("The Chancellor was Hitler! The Fascists win!")
-                session['state'] = 'game_end'
-                await terminate_game(None, "Fascist")
-                return
-            await handle_executive_action(self.ctx, session, channel)
-
-        # Check for Liberal win
-        elif enacted_policy == 'Liberal' and lib_count >= 5:
-            await channel.send("The Liberals have enacted five policies! The Liberals win!")
-            session['state'] = 'game_end'
-            await terminate_game(None, "Liberal")
-            return
-        else:
-            self.session['state'] = 'new_round'
-            president = await bot.fetch_user(self.session['president'])
-            embed = discord.Embed(
-                title="End of Term",
-                description=f"President {
-                    president.mention}, your term is ending. Click the button below to proceed.",
-                color=discord.Color.blue()
-            )
-            # Add the button to end the term
-            view = EndTermView(session, self.ctx, channel)
-            await channel.send(embed=embed, view=view)
-
-            save_game_state()
+                save_game_state()
 
 
 class PlayerSelect(discord.ui.Select):
@@ -1347,20 +1340,11 @@ class ExecutionView(View):
         self.session['players'].remove(executed_player_id)
         await msg.edit(embed=exec_embed)
         # Check if the executed player is Hitler
-        if self.session['roles'][executed_player_id] == "Hitler":
-            await self.channel.send("The executed player was Hitler! The Liberals win!")
-            self.session['state'] = 'game_end'
-            await terminate_game(None, "Liberal")
-            return
-        else:
-            await self.channel.send("The executed player was not Hitler. The game continues.")
+        await check_win(self.ctx, self.session, self.channel, executed_player_id)
+        await self.channel.send("The executed player was not Hitler. The game continues.")
 
         # Adjust permissions for the executed player
         await self.channel.set_permissions(executed_player, send_messages=False, add_reactions=False, read_messages=True)
-
-        # Mark the player as executed in the session
-        
-
         if executed_player_id in self.session.get('last_government', {}).values():
             #set that value as none:
             if executed_player_id == session["last_government"]["president"]:
@@ -1627,69 +1611,48 @@ class ConfirmVetoView(View):
             'president': session['president'], 'chancellor': session['chancellor']}
 
         # Determine the executive action based on the number of players and policies
-        if enacted_policy == 'Fascist':
+        if await check_win(self.ctx, self.session, self.channel):
+            if enacted_policy == 'Fascist':
+                session['executive_action'] = ""
+                # #test
+                # if len(session['players']) <= 4:
+                #     session['executive_action'] = powers[1]
+                if len(session['players']) >= 9:
+                    if fasc_count == 1:
+                        session['executive_action'] = powers[0]
+                    elif fasc_count == 2:
+                        session['executive_action'] = powers[0]
+                    elif fasc_count == 3:
+                        session['executive_action'] = powers[1]
+                    elif fasc_count >= 4:
+                        session['executive_action'] = powers[3]
+                elif len(session['players']) in [7, 8]:
+                    if fasc_count == 2:
+                        session['executive_action'] = powers[0]
+                    elif fasc_count == 3:
+                        session['executive_action'] = powers[1]
+                    elif fasc_count >= 4:
+                        session['executive_action'] = powers[3]
+                elif len(session['players']) <= 6:
+                    if fasc_count == 3:
+                        session['executive_action'] = powers[2]
+                    elif fasc_count >= 4:
+                        session['executive_action'] = powers[3]
+                await handle_executive_action(self.ctx, session, channel)
+            else:
+                self.session['state'] = 'new_round'
+                president = await bot.fetch_user(session['president'])
+                embed = discord.Embed(
+                    title="End of Term",
+                    description=f"President {
+                        president.mention}, your term is ending. Click the button below to proceed.",
+                    color=discord.Color.blue()
+                )
 
-            session['executive_action'] = ""
-            # #test
-            # if len(session['players']) <= 4:
-            #     session['executive_action'] = powers[1]
-            if len(session['players']) >= 9:
-                if fasc_count == 1:
-                    session['executive_action'] = powers[0]
-                elif fasc_count == 2:
-                    session['executive_action'] = powers[0]
-                elif fasc_count == 3:
-                    session['executive_action'] = powers[1]
-                elif fasc_count >= 4:
-                    session['executive_action'] = powers[3]
-            elif len(session['players']) in [7, 8]:
-                if fasc_count == 2:
-                    session['executive_action'] = powers[0]
-                elif fasc_count == 3:
-                    session['executive_action'] = powers[1]
-                elif fasc_count >= 4:
-                    session['executive_action'] = powers[3]
-            elif len(session['players']) <= 6:
-                if fasc_count == 3:
-                    session['executive_action'] = powers[2]
-                elif fasc_count >= 4:
-                    session['executive_action'] = powers[3]
-
-            # Handle executive action and wait until it completes
-            
-            # Check if the game ends because of Hitler being Chancellor
-            if fasc_count >= 4 and session['roles'][session['chancellor']] == 'Hitler':
-                await channel.send("The Chancellor was Hitler! The Fascists win!")
-                session['state'] = 'game_end'
-                await terminate_game(None, "Fascist")
-                return
-            if fasc_count >= 6:
-                await channel.send("The Fascists have enacted 6 policies. Fascists win!")
-                session['state'] = 'game_end'
-                await terminate_game(None, 'Fascist')
-                return
-            await handle_executive_action(self.ctx, session, channel)
-
-        # Check for Liberal win
-        if enacted_policy == 'Liberal' and lib_count >= 5:
-            await channel.send("The Liberals have enacted five policies! The Liberals win!")
-            session['state'] = 'game_end'
-            await terminate_game(None, "Liberal")
-            return
-        else:
-            self.session['state'] = 'new_round'
-            president = await bot.fetch_user(session['president'])
-            embed = discord.Embed(
-                title="End of Term",
-                description=f"President {
-                    president.mention}, your term is ending. Click the button below to proceed.",
-                color=discord.Color.blue()
-            )
-
-            # Add the button to end the term
-            view = EndTermView(session, self.ctx, channel)
-            await channel.send(embed=embed, view=view)
-            save_game_state()
+                # Add the button to end the term
+                view = EndTermView(session, self.ctx, channel)
+                await channel.send(embed=embed, view=view)
+                save_game_state()
 
 
 class DiscardPolicy(Select):
@@ -1885,72 +1848,48 @@ class EnactPolicyView(View):
             'president': session['president'], 'chancellor': session['chancellor']}
 
         # Determine the executive action based on the number of players and policies
-        if enacted_policy == 'Fascist':
+        if await check_win(self.ctx, self.session, self.channel):
+            if enacted_policy == 'Fascist':
+                session['executive_action'] = ""
+                # #test
+                # if len(session['players']) <= 4:
+                #     session['executive_action'] = powers[1]
+                if len(session['players']) >= 9:
+                    if fasc_count == 1:
+                        session['executive_action'] = powers[0]
+                    elif fasc_count == 2:
+                        session['executive_action'] = powers[0]
+                    elif fasc_count == 3:
+                        session['executive_action'] = powers[1]
+                    elif fasc_count >= 4:
+                        session['executive_action'] = powers[3]
+                elif len(session['players']) in [7, 8]:
+                    if fasc_count == 2:
+                        session['executive_action'] = powers[0]
+                    elif fasc_count == 3:
+                        session['executive_action'] = powers[1]
+                    elif fasc_count >= 4:
+                        session['executive_action'] = powers[3]
+                elif len(session['players']) <= 6:
+                    if fasc_count == 3:
+                        session['executive_action'] = powers[2]
+                    elif fasc_count >= 4:
+                        session['executive_action'] = powers[3]
+                await handle_executive_action(self.ctx, session, channel)
+            else:
+                self.session['state'] = 'new_round'
+                president = await bot.fetch_user(session['president'])
+                embed = discord.Embed(
+                    title="End of Term",
+                    description=f"President {
+                        president.mention}, your term is ending. Click the button below to proceed.",
+                    color=discord.Color.blue()
+                )
 
-            session['executive_action'] = ""
-            #test
-            # if len(session['players']) <= 4:
-            #     if fasc_count == 1:
-            #         session['executive_action'] = powers[0]
-            #     elif fasc_count == 2:
-            #         session['executive_action'] = powers[1]
-            if len(session['players']) >= 9:
-                if fasc_count == 1:
-                    session['executive_action'] = powers[0]
-                elif fasc_count == 2:
-                    session['executive_action'] = powers[0]
-                elif fasc_count == 3:
-                    session['executive_action'] = powers[1]
-                elif fasc_count >= 4:
-                    session['executive_action'] = powers[3]
-            elif len(session['players']) in [7, 8]:
-                if fasc_count == 2:
-                    session['executive_action'] = powers[0]
-                elif fasc_count == 3:
-                    session['executive_action'] = powers[1]
-                elif fasc_count >= 4:
-                    session['executive_action'] = powers[3]
-            elif len(session['players']) <= 6:
-                if fasc_count == 3:
-                    session['executive_action'] = powers[2]
-                elif fasc_count >= 4:
-                    session['executive_action'] = powers[3]
-
-            # Handle executive action and wait until it completes
-            
-            # Check if the game ends because of Hitler being Chancellor
-            if fasc_count >= 4 and session['roles'][session['chancellor']] == 'Hitler':
-                await channel.send("The Chancellor was Hitler! The Fascists win!")
-                session['state'] = 'game_end'
-                await terminate_game(None, "Fascist")
-                return
-            if fasc_count >= 6:
-                await channel.send("The Fascists have enacted 6 policies. Fascists win!")
-                session['state'] = 'game_end'
-                await terminate_game(None, 'Fascist')
-                return
-            await handle_executive_action(self.ctx, session, channel)
-
-        # Check for Liberal win
-        elif enacted_policy == 'Liberal' and lib_count >= 5:
-            await channel.send("The Liberals have enacted five policies! The Liberals win!")
-            session['state'] = 'game_end'
-            await terminate_game(None, "Liberal")
-            return
-        else:
-            session['state'] = 'new_round'
-            president = await bot.fetch_user(session['president'])
-            embed = discord.Embed(
-                title="End of Term",
-                description=f"President {
-                    president.mention}, your term is ending. Click the button below to proceed.",
-                color=discord.Color.blue()
-            )
-
-            # Add the button to end the term
-            view = EndTermView(session, self.ctx, channel)
-            await channel.send(embed=embed, view=view)
-            save_game_state()
+                # Add the button to end the term
+                view = EndTermView(session, self.ctx, channel)
+                await channel.send(embed=embed, view=view)
+                save_game_state()
 
 
 async def enact_policy(ctx, session, channel):
@@ -2043,14 +1982,15 @@ async def terminate_game(ctx: commands.Context, winner: str = None):
     for player in session['players']:
         if str(player) not in stats:
             await initialize_player_stats(str(player))
-        if session['roles'][player] in winner:
-            stats[str(player)]['wins'] += 1
-            stats[str(player)][f'win_as_{session['roles'][player]}'] += 1
-            stats[str(player)]['games'] += 1
-        else:
-            stats[str(player)]['losses'] += 1
-            stats[str(player)][f'loss_as_{session['roles'][player]}'] += 1
-            stats[str(player)]['games'] += 1
+        if winner != []:
+            if session['roles'][player] in winner:
+                stats[str(player)]['wins'] += 1
+                stats[str(player)][f'win_as_{session['roles'][player]}'] += 1
+                stats[str(player)]['games'] += 1
+            else:
+                stats[str(player)]['losses'] += 1
+                stats[str(player)][f'loss_as_{session['roles'][player]}'] += 1
+                stats[str(player)]['games'] += 1
         # user = await bot.fetch_user(player)
         corresponding_role += f"**<@{player}>: {session['roles'][player]}** - {
             "Won" if session['roles'][player] in winner else "Lost"}\n"
@@ -2058,14 +1998,15 @@ async def terminate_game(ctx: commands.Context, winner: str = None):
     for player in dead:
         if not stats[str(player)]:
             await initialize_player_stats(str(player))
-        if session['roles'][player] in winner:
-            stats[str(player)]['wins'] += 1
-            stats[str(player)][f'win_as_{session['roles'][player]}'] += 1
-            stats[str(player)]['games'] += 1
-        else:
-            stats[str(player)]['losses'] += 1
-            stats[str(player)][f'loss_as_{session['roles'][player]}'] += 1
-            stats[str(player)]['games'] += 1
+        if winner != []:
+            if session['roles'][player] in winner :
+                stats[str(player)]['wins'] += 1
+                stats[str(player)][f'win_as_{session['roles'][player]}'] += 1
+                stats[str(player)]['games'] += 1
+            else:
+                stats[str(player)]['losses'] += 1
+                stats[str(player)][f'loss_as_{session['roles'][player]}'] += 1
+                stats[str(player)]['games'] += 1
         corresponding_role += f'''**<@{player}>: {
             session['roles'][player]}** :skull_crossbones: - {"Won" if session['roles'][player] in winner else "Lost"}\n'''
     if "Fascist" in winner:
